@@ -44,7 +44,7 @@ python -m pip install -r requirements.txt --no-deps
 python -m pip install -e . --no-deps
 ```
 
-`.venv/` está excluido en `.gitignore`. El indicador `--no-deps` evita que MediaPipe instale `opencv-contrib-python` junto a `opencv-python`. Las versiones quedan fijadas en `requirements.txt`.
+`.venv/` está excluido en `.gitignore`. MediaPipe 1.1.1 requiere `opencv-contrib-python`; esa es la única distribución de OpenCV fijada en `requirements.txt`.
 
 `pyproject.toml` solo empaqueta `src/fingermelody`, para que `python -m fingermelody.main` funcione con la estructura `src/`.
 
@@ -70,6 +70,5 @@ python -m pytest
 
 - Si `python` no es 3.11, vuelve a crear el entorno con `py -3.11 -m venv .venv`.
 - Si PowerShell bloquea `Activate.ps1`, ejecuta `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` y activa el entorno de nuevo. También puedes llamar a `.venv\Scripts\python.exe` sin activarlo.
-- No instales `opencv-contrib-python`, `opencv-python-headless` ni otra variante de OpenCV en este entorno. Todas publican el módulo `cv2`.
-- `python -m pip check` informa de que MediaPipe pide `opencv-contrib-python`. Es esperado: esa dependencia declarada se sustituye por `opencv-python==4.14.0.94`, que cubre las llamadas reales de MediaPipe.
+- No instales `opencv-python` ni `opencv-python-headless` junto a `opencv-contrib-python`. Esas distribuciones publican el mismo módulo `cv2`.
 - No uses paquetes instalados en el Python global. El entorno virtual no los incluye.

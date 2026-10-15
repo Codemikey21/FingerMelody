@@ -3,19 +3,15 @@
 # Instalar dentro del entorno virtual con:
 #   python -m pip install -r requirements.txt --no-deps
 #
-# --no-deps es obligatorio. MediaPipe 1.1.1 declara opencv-contrib-python,
-# pero esa variante publica el mismo módulo cv2 que opencv-python y no debe
-# instalarse a la vez. MediaPipe solo usa funciones estándar de cv2, cubiertas
-# por opencv-python 4.14.0.94.
+# MediaPipe 1.1.1 requiere opencv-contrib-python. Es la única distribución de
+# OpenCV: opencv-python y opencv-python-headless publican el mismo módulo cv2
+# y no deben instalarse en este entorno.
 #
-# opencv-python 5.0.0.93 también existe; se mantiene la línea 4.14 porque
-# cubre esas llamadas sin cambiar de versión mayor. numpy 2.5 exige Python 3.12,
-# así que en 3.11 el pin es numpy 2.4.6.
-#
-# python -m pip check avisará de que falta opencv-contrib-python. Es esperado.
+# La versión 4.14.0.94 coincide con NumPy 2.4.6 en Python 3.11. NumPy 2.5 exige
+# Python 3.12.
 
 numpy==2.4.6
-opencv-python==4.14.0.94
+opencv-contrib-python==4.14.0.94
 mediapipe==1.1.1
 PySide6==6.12.0
 pygame==2.6.1

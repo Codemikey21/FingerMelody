@@ -1,6 +1,5 @@
-# Las dependencias de terceros están fijadas en requirements.txt.
-# No se repiten aquí: instalar el paquete con `pip install -e .` no debe
-# resolver opencv-contrib-python, declarado por MediaPipe.
+# Las dependencias de terceros están fijadas en requirements.txt,
+# incluida opencv-contrib-python, requerida por MediaPipe.
 
 [build-system]
 requires = ["setuptools>=68"]
