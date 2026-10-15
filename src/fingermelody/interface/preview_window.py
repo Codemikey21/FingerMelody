@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fingermelody.gestures.finger_detector import FingerPanel, format_panel_column
+from fingermelody.gestures.gesture_engine import GestureUpdate, format_gesture_column
 from fingermelody.interface.camera_worker import CameraWorker
 from fingermelody.vision.camera_manager import CameraManager
 from fingermelody.vision.hand_tracker import HandViewState
@@ -201,7 +201,7 @@ class PreviewWindow(QMainWindow):
         self._right_fingers = QLabel()
         self._right_fingers.setObjectName("rightFingerPanel")
         self._right_fingers.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self._apply_finger_panel(FingerPanel.inactive())
+        self._apply_gestures(GestureUpdate.inactive())
 
         finger_panel = QHBoxLayout()
         finger_panel.addWidget(self._left_fingers, stretch=1)
@@ -243,7 +243,7 @@ class PreviewWindow(QMainWindow):
         if fps is not None:
             self._fps_label.setText(f"FPS: {fps:.1f}")
         self._apply_hand_state(hands)
-        self._apply_finger_panel(fingers)
+        self._apply_gestures(fingers)
         if image is None or sequence == self._shown_sequence:
             return
 
@@ -284,7 +284,7 @@ class PreviewWindow(QMainWindow):
         self._state = "idle"
         self._update_buttons()
         self._apply_hand_state(HandViewState())
-        self._apply_finger_panel(FingerPanel.inactive())
+        self._apply_gestures(GestureUpdate.inactive())
         if self._closing or self._error_message is not None:
             return
         self._set_status("Detenida")
@@ -315,13 +315,11 @@ class PreviewWindow(QMainWindow):
             "Derecha: detectada" if state.right_present else "Derecha: ausente"
         )
 
-    def _apply_finger_panel(self, panel: FingerPanel) -> None:
-        self._left_fingers.setText(
-            format_panel_column("MANO IZQUIERDA", panel.left_lines, active=panel.active)
-        )
-        self._right_fingers.setText(
-            format_panel_column("MANO DERECHA", panel.right_lines, active=panel.active)
-        )
+    def _apply_gestures(self, update: GestureUpdate) -> None:
+        left = tuple(state for state in update.states if state.hand == "Left")
+        right = tuple(state for state in update.states if state.hand == "Right")
+        self._left_fingers.setText(format_gesture_column("MANO IZQUIERDA", left, active=update.active))
+        self._right_fingers.setText(format_gesture_column("MANO DERECHA", right, active=update.active))
 
     def _on_tracking_warning(self, message: str) -> None:
         self._apply_hand_state(HandViewState(active=False, message=message))

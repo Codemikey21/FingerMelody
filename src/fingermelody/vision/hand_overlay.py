@@ -32,9 +32,10 @@ HAND_CONNECTIONS = (
     (19, 20),
 )
 
-LEFT_COLOR = (164, 176, 122)
-RIGHT_COLOR = (120, 156, 186)
-UNKNOWN_COLOR = (150, 150, 150)
+LEFT_COLOR = (176, 198, 128)
+RIGHT_COLOR = (112, 168, 204)
+UNKNOWN_COLOR = (168, 168, 168)
+POINT_OUTLINE = (16, 16, 20)
 
 
 def mirror_selfie_frame(frame_bgr: np.ndarray) -> np.ndarray:
@@ -50,8 +51,6 @@ def draw_hands(frame_bgr: np.ndarray, hands: tuple[TrackedHand, ...] | list[Trac
         color = _color_for(hand.label)
         _draw_connections(canvas, hand.pixels, color, width, height)
         _draw_points(canvas, hand.pixels, color, width, height)
-        if hand.label:
-            _draw_label(canvas, hand.label, hand.pixels, color, width, height)
     return canvas
 
 
@@ -83,24 +82,5 @@ def _draw_points(canvas, pixels, color, width: int, height: int) -> None:
     for point in pixels:
         if not _inside(point, width, height):
             continue
-        cv2.circle(canvas, point, 3, color, -1, cv2.LINE_AA)
-
-
-def _draw_label(canvas, text: str, pixels, color, width: int, height: int) -> None:
-    anchor = next((point for point in pixels if _inside(point, width, height)), None)
-    if anchor is None:
-        return
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.5
-    thickness = 1
-    (text_width, text_height), baseline = cv2.getTextSize(text, font, scale, thickness)
-    x = min(max(anchor[0], 0), max(width - text_width - 8, 0))
-    y = min(max(anchor[1] - 10, text_height + 6), max(height - baseline - 2, text_height + 6))
-    cv2.rectangle(
-        canvas,
-        (x, y - text_height - 6),
-        (x + text_width + 8, y + baseline + 2),
-        (20, 20, 24),
-        -1,
-    )
-    cv2.putText(canvas, text, (x + 4, y), font, scale, color, thickness, cv2.LINE_AA)
+        cv2.circle(canvas, point, 4, POINT_OUTLINE, 1, cv2.LINE_AA)
+        cv2.circle(canvas, point, 2, color, -1, cv2.LINE_AA)

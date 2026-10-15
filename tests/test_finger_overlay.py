@@ -1,41 +1,57 @@
-"""Comprueba que los nombres se dibujan junto a la punta, sin alterar el fotograma."""
+"""El aro de pulsación no tapa el círculo del landmark ni escribe texto."""
 
 import numpy as np
 
-from fingermelody.gestures.finger_detector import FingerDetector
-from fingermelody.gestures.finger_overlay import draw_finger_labels
-from fingermelody.vision.hand_tracker import HandFrame, TrackedHand
+from fingermelody.gestures.finger_overlay import draw_press_highlights
+from fingermelody.gestures.gesture_engine import FingerGestureState
+from fingermelody.vision.hand_overlay import LEFT_COLOR, draw_hands
+from fingermelody.vision.hand_tracker import TrackedHand
 
 
-def _hand(label: str) -> TrackedHand:
-    pixels = tuple((40 + index * 8, 80) for index in range(21))
-    normalized = tuple((0.2, 0.2, 0.0) for _ in range(21))
-    return TrackedHand(label, 0.9, normalized, pixels)
+def _press(hand: str, tip: tuple[int, int]) -> FingerGestureState:
+    return FingerGestureState(
+        f"{hand.upper()}_INDEX",
+        hand,
+        "index",
+        "Índice",
+        "PRESSED",
+        "Pulsación",
+        1,
+        True,
+        tip,
+    )
 
 
-def test_labels_are_drawn_on_a_copy_near_the_fingertip():
-    source = np.zeros((120, 200, 3), dtype=np.uint8)
-    observed = FingerDetector().identify(HandFrame(hands=(_hand("Left"),), width=200, height=120))
+def test_press_ring_leaves_the_landmark_center_visible():
+    source = np.zeros((60, 60, 3), dtype=np.uint8)
+    tip = (20, 24)
+    hand = TrackedHand("Left", 0.9, ((0.3, 0.4, 0.0),), (tip,))
+    drawn = draw_hands(source, (hand,))
 
-    annotated = draw_finger_labels(source, observed.fingers)
+    annotated = draw_press_highlights(drawn, (_press("Left", tip),))
 
     assert source.sum() == 0
-    assert annotated.sum() > 0
-    assert annotated[80, 40].sum() == 0
+    assert annotated[tip[1], tip[0]].tolist() == list(LEFT_COLOR)
+    assert annotated.sum() > drawn.sum()
 
 
-def test_untracked_fingers_are_not_drawn():
-    source = np.zeros((80, 80, 3), dtype=np.uint8)
-    hand = TrackedHand(
+def test_press_highlight_skips_a_missing_tip_and_does_not_invent_a_point():
+    source = np.zeros((40, 40, 3), dtype=np.uint8)
+    state = _press("Right", (20, 20))
+    hidden = FingerGestureState(
+        "RIGHT_THUMB",
         "Right",
-        0.9,
-        tuple((0.5, 0.5, 0.0) for _ in range(4)),
-        tuple((10, 10) for _ in range(4)),
+        "thumb",
+        "Pulgar",
+        "LOST",
+        "Seguimiento perdido",
+        0,
+        False,
+        None,
     )
-    observed = FingerDetector().identify(HandFrame(hands=(hand,), width=80, height=80))
 
-    annotated = draw_finger_labels(source, observed.fingers)
+    annotated = draw_press_highlights(source, (hidden, state))
 
-    assert observed.fingers
-    assert all(finger.tracked is False for finger in observed.fingers)
-    assert annotated.sum() == 0
+    assert source.sum() == 0
+    assert annotated[20, 20].tolist() == [0, 0, 0]
+    assert annotated.sum() > 0

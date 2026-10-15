@@ -63,29 +63,21 @@ def test_both_hands_update_the_indicators(qapp):
     window.close()
 
 
-def test_finger_panel_lists_detected_fingers_without_calling_them_pressed(qapp):
-    from fingermelody.gestures.finger_detector import FingerDetector, format_panel_column
-    from fingermelody.vision.hand_tracker import HandFrame, TrackedHand
+def test_finger_panel_shows_rest_and_a_press_count(qapp):
+    from tests.test_gesture_engine import engine, finger, repeat
 
-    pixels = tuple((10, 10) for _ in range(21))
-    normalized = tuple((0.4, 0.4, 0.0) for _ in range(21))
-    observed = FingerDetector().identify(
-        HandFrame(
-            hands=(
-                TrackedHand("Left", 0.9, normalized, pixels),
-                TrackedHand("Right", 0.9, normalized, pixels),
-            ),
-            width=64,
-            height=64,
-        )
-    )
+    motor = engine(highlight_ms=200)
+    rest = repeat(motor, [finger("Left", "index", 180), finger("Right", "pinky", 180)], 0, 2)
+    pressed = repeat(motor, [finger("Left", "index", 60), finger("Right", "pinky", 180)], 10, 3)
     window = PreviewWindow()
-    window._apply_finger_panel(observed.panel)
-
+    window._apply_gestures(rest)
+    resting = window.findChild(QLabel, "leftFingerPanel").text()
+    window._apply_gestures(pressed)
     left = window.findChild(QLabel, "leftFingerPanel").text()
     right = window.findChild(QLabel, "rightFingerPanel").text()
-    assert left == format_panel_column("MANO IZQUIERDA", observed.panel.left_lines, active=True)
-    assert "Pulgar — Detectado" in left
-    assert "Meñique — Detectado" in right
-    assert "puls" not in left.casefold()
+
+    assert "Índice (LEFT_INDEX) — Reposo · 0" in resting
+    assert "Pulsación" not in resting
+    assert "Índice (LEFT_INDEX) — Pulsación · 1" in left
+    assert "Meñique (RIGHT_PINKY) — Reposo · 0" in right
     window.close()

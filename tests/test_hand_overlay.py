@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from fingermelody.vision.hand_overlay import draw_hands, mirror_selfie_frame
+from fingermelody.vision.hand_overlay import LEFT_COLOR, RIGHT_COLOR, draw_hands, mirror_selfie_frame
 from fingermelody.vision.hand_tracker import TrackedHand
 
 
@@ -44,3 +44,19 @@ def test_draw_skips_points_outside_the_frame():
     drawn = draw_hands(frame, (hand,))
 
     assert np.array_equal(drawn, frame)
+
+
+def test_clustered_tips_keep_their_centers_and_the_image_has_no_labels():
+    frame = np.zeros((90, 140, 3), dtype=np.uint8)
+    pixels = tuple((28 + (index % 5) * 8, 36 + (index // 5) * 8) for index in range(21))
+    left = TrackedHand("Left", 0.9, tuple((0.2, 0.2, 0.0) for _ in range(21)), pixels)
+    right_pixels = tuple((x + 70, y) for x, y in pixels)
+    right = TrackedHand("Right", 0.9, tuple((0.8, 0.2, 0.0) for _ in range(21)), right_pixels)
+
+    drawn = draw_hands(frame, (left, right))
+
+    for x, y in pixels:
+        assert drawn[y, x].tolist() == list(LEFT_COLOR)
+    for x, y in right_pixels:
+        assert drawn[y, x].tolist() == list(RIGHT_COLOR)
+    assert drawn[8, 28].tolist() == [0, 0, 0]

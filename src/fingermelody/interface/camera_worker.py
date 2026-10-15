@@ -15,8 +15,9 @@ from fingermelody.vision.camera_manager import (
     CameraManager,
     FrameReadError,
 )
-from fingermelody.gestures.finger_detector import FingerDetector, FingerPanel
-from fingermelody.gestures.finger_overlay import draw_finger_labels
+from fingermelody.gestures.finger_detector import FingerDetector
+from fingermelody.gestures.finger_overlay import draw_press_highlights
+from fingermelody.gestures.gesture_engine import GestureEngine, GestureUpdate
 from fingermelody.vision.hand_overlay import draw_hands, mirror_selfie_frame
 from fingermelody.vision.hand_tracker import (
     DETECT_FAILED_MESSAGE,
@@ -68,13 +69,14 @@ class CameraWorker(QThread):
         self._fps: float | None = None
         self._sequence = 0
         self._hands = HandViewState()
-        self._fingers = FingerPanel.inactive()
+        self._fingers = GestureUpdate.inactive()
         self._finger_detector = FingerDetector()
+        self._gesture_engine = GestureEngine()
         self._frame_times: deque[float] = deque()
         self._tracking_fallback = HandViewState()
 
-    def latest(self) -> tuple[QImage | None, float | None, int, HandViewState, FingerPanel]:
-        """Devuelve la última imagen, los FPS, la secuencia, las manos y los dedos."""
+    def latest(self) -> tuple[QImage | None, float | None, int, HandViewState, GestureUpdate]:
+        """Devuelve la última imagen, los FPS, la secuencia, las manos y los gestos."""
         self._mutex.lock()
         try:
             return self._latest_image, self._fps, self._sequence, self._hands, self._fingers
@@ -82,6 +84,7 @@ class CameraWorker(QThread):
             self._mutex.unlock()
 
     def run(self) -> None:
+        self._gesture_engine.reset()
         self._reset_snapshot()
         tracker = None
         try:
@@ -159,15 +162,16 @@ class CameraWorker(QThread):
 
     def _recognize(self, frame: np.ndarray, tracker):
         if tracker is None:
-            return frame, self._tracking_fallback, FingerPanel.inactive()
+            return frame, self._tracking_fallback, GestureUpdate.inactive()
         try:
             detected = tracker.detect(frame)
         except HandTrackerError:
-            return frame, HandViewState(active=False, message=DETECT_FAILED_MESSAGE), FingerPanel.inactive()
+            return frame, HandViewState(active=False, message=DETECT_FAILED_MESSAGE), GestureUpdate.inactive()
         observed = self._finger_detector.identify(detected)
+        gestures = self._gesture_engine.update(observed.fingers, int(time.monotonic() * 1000))
         annotated = draw_hands(frame, detected.hands)
-        annotated = draw_finger_labels(annotated, observed.fingers)
-        return annotated, to_view_state(detected), observed.panel
+        annotated = draw_press_highlights(annotated, gestures.states)
+        return annotated, to_view_state(detected), gestures
 
     def _measure_fps(self, now: float) -> float | None:
         self._frame_times.append(now)
@@ -186,7 +190,7 @@ class CameraWorker(QThread):
         image: QImage,
         fps: float | None,
         hands: HandViewState,
-        fingers: FingerPanel,
+        fingers: GestureUpdate,
     ) -> None:
         self._mutex.lock()
         try:
@@ -205,7 +209,7 @@ class CameraWorker(QThread):
             self._fps = None
             self._sequence = 0
             self._hands = HandViewState()
-            self._fingers = FingerPanel.inactive()
+            self._fingers = GestureUpdate.inactive()
             self._frame_times.clear()
         finally:
             self._mutex.unlock()
