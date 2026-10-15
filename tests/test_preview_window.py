@@ -21,6 +21,9 @@ def test_preview_window_shows_camera_controls(qapp):
     assert window.findChild(QLabel, "handsLabel").text() == "Manos: —"
     assert window.findChild(QLabel, "leftHandLabel").text() == "Izquierda: —"
     assert window.findChild(QLabel, "rightHandLabel").text() == "Derecha: —"
+    assert window.findChild(QLabel, "leftFingerPanel").text().startswith("MANO IZQUIERDA")
+    assert "Pulgar — —" in window.findChild(QLabel, "leftFingerPanel").text()
+    assert "Índice — —" in window.findChild(QLabel, "rightFingerPanel").text()
     assert window.findChild(QPushButton, "startButton").isEnabled()
     assert window.findChild(QPushButton, "stopButton").isEnabled() is False
 
@@ -57,4 +60,32 @@ def test_both_hands_update_the_indicators(qapp):
     assert window.findChild(QLabel, "handsLabel").text() == "Manos: 2"
     assert window.findChild(QLabel, "leftHandLabel").text() == "Izquierda: detectada"
     assert window.findChild(QLabel, "rightHandLabel").text() == "Derecha: detectada"
+    window.close()
+
+
+def test_finger_panel_lists_detected_fingers_without_calling_them_pressed(qapp):
+    from fingermelody.gestures.finger_detector import FingerDetector, format_panel_column
+    from fingermelody.vision.hand_tracker import HandFrame, TrackedHand
+
+    pixels = tuple((10, 10) for _ in range(21))
+    normalized = tuple((0.4, 0.4, 0.0) for _ in range(21))
+    observed = FingerDetector().identify(
+        HandFrame(
+            hands=(
+                TrackedHand("Left", 0.9, normalized, pixels),
+                TrackedHand("Right", 0.9, normalized, pixels),
+            ),
+            width=64,
+            height=64,
+        )
+    )
+    window = PreviewWindow()
+    window._apply_finger_panel(observed.panel)
+
+    left = window.findChild(QLabel, "leftFingerPanel").text()
+    right = window.findChild(QLabel, "rightFingerPanel").text()
+    assert left == format_panel_column("MANO IZQUIERDA", observed.panel.left_lines, active=True)
+    assert "Pulgar — Detectado" in left
+    assert "Meñique — Detectado" in right
+    assert "puls" not in left.casefold()
     window.close()

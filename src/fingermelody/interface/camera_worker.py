@@ -15,6 +15,8 @@ from fingermelody.vision.camera_manager import (
     CameraManager,
     FrameReadError,
 )
+from fingermelody.gestures.finger_detector import FingerDetector, FingerPanel
+from fingermelody.gestures.finger_overlay import draw_finger_labels
 from fingermelody.vision.hand_overlay import draw_hands, mirror_selfie_frame
 from fingermelody.vision.hand_tracker import (
     DETECT_FAILED_MESSAGE,
@@ -66,14 +68,16 @@ class CameraWorker(QThread):
         self._fps: float | None = None
         self._sequence = 0
         self._hands = HandViewState()
+        self._fingers = FingerPanel.inactive()
+        self._finger_detector = FingerDetector()
         self._frame_times: deque[float] = deque()
         self._tracking_fallback = HandViewState()
 
-    def latest(self) -> tuple[QImage | None, float | None, int, HandViewState]:
-        """Devuelve la última imagen, los FPS, la secuencia y el estado de las manos."""
+    def latest(self) -> tuple[QImage | None, float | None, int, HandViewState, FingerPanel]:
+        """Devuelve la última imagen, los FPS, la secuencia, las manos y los dedos."""
         self._mutex.lock()
         try:
-            return self._latest_image, self._fps, self._sequence, self._hands
+            return self._latest_image, self._fps, self._sequence, self._hands, self._fingers
         finally:
             self._mutex.unlock()
 
@@ -137,7 +141,7 @@ class CameraWorker(QThread):
                 # Un solo volteo. El modelo y la ventana reciben esta copia.
                 # mirrored_input corrige Left/Right; los puntos no se vuelven a reflejar.
                 frame = mirror_selfie_frame(frame)
-                frame, view = self._recognize(frame, tracker)
+                frame, view, fingers = self._recognize(frame, tracker)
                 image = bgr_frame_to_qimage(frame)
             except (HandTrackerError, ValueError, cv2.error):
                 failures += 1
@@ -148,19 +152,22 @@ class CameraWorker(QThread):
                 continue
 
             now = time.perf_counter()
-            self._publish(image, self._measure_fps(now), view)
+            self._publish(image, self._measure_fps(now), view, fingers)
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             if elapsed_ms < _MIN_LOOP_MS:
                 self.msleep(_MIN_LOOP_MS - elapsed_ms)
 
     def _recognize(self, frame: np.ndarray, tracker):
         if tracker is None:
-            return frame, self._tracking_fallback
+            return frame, self._tracking_fallback, FingerPanel.inactive()
         try:
             detected = tracker.detect(frame)
         except HandTrackerError:
-            return frame, HandViewState(active=False, message=DETECT_FAILED_MESSAGE)
-        return draw_hands(frame, detected.hands), to_view_state(detected)
+            return frame, HandViewState(active=False, message=DETECT_FAILED_MESSAGE), FingerPanel.inactive()
+        observed = self._finger_detector.identify(detected)
+        annotated = draw_hands(frame, detected.hands)
+        annotated = draw_finger_labels(annotated, observed.fingers)
+        return annotated, to_view_state(detected), observed.panel
 
     def _measure_fps(self, now: float) -> float | None:
         self._frame_times.append(now)
@@ -174,12 +181,19 @@ class CameraWorker(QThread):
             return None
         return (len(self._frame_times) - 1) / span
 
-    def _publish(self, image: QImage, fps: float | None, hands: HandViewState) -> None:
+    def _publish(
+        self,
+        image: QImage,
+        fps: float | None,
+        hands: HandViewState,
+        fingers: FingerPanel,
+    ) -> None:
         self._mutex.lock()
         try:
             self._latest_image = image
             self._fps = fps
             self._hands = hands
+            self._fingers = fingers
             self._sequence += 1
         finally:
             self._mutex.unlock()
@@ -191,6 +205,7 @@ class CameraWorker(QThread):
             self._fps = None
             self._sequence = 0
             self._hands = HandViewState()
+            self._fingers = FingerPanel.inactive()
             self._frame_times.clear()
         finally:
             self._mutex.unlock()

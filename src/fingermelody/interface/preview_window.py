@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from fingermelody.gestures.finger_detector import FingerPanel, format_panel_column
 from fingermelody.interface.camera_worker import CameraWorker
 from fingermelody.vision.camera_manager import CameraManager
 from fingermelody.vision.hand_tracker import HandViewState
@@ -31,6 +32,14 @@ QLabel#titleLabel {
 }
 QLabel#deviceLabel, QLabel#fpsLabel {
     color: #c8c8d0;
+}
+QLabel#leftFingerPanel, QLabel#rightFingerPanel {
+    color: #d5d5dc;
+    font-size: 12px;
+    background-color: #141418;
+    border: 1px solid #34343a;
+    border-radius: 6px;
+    padding: 8px 10px;
 }
 QLabel#preview {
     background-color: #101014;
@@ -93,7 +102,7 @@ class PreviewWindow(QMainWindow):
 
         self.setWindowTitle("FingerMelody")
         self.setStyleSheet(_DARK_STYLESHEET)
-        self.resize(720, 720)
+        self.resize(760, 900)
         self._build_ui(device_index, width, height)
         self._update_buttons()
 
@@ -186,6 +195,18 @@ class PreviewWindow(QMainWindow):
         sides.addWidget(self._right_label)
         sides.addStretch(1)
 
+        self._left_fingers = QLabel()
+        self._left_fingers.setObjectName("leftFingerPanel")
+        self._left_fingers.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._right_fingers = QLabel()
+        self._right_fingers.setObjectName("rightFingerPanel")
+        self._right_fingers.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self._apply_finger_panel(FingerPanel.inactive())
+
+        finger_panel = QHBoxLayout()
+        finger_panel.addWidget(self._left_fingers, stretch=1)
+        finger_panel.addWidget(self._right_fingers, stretch=1)
+
         self._status_label = QLabel("Detenida")
         self._status_label.setObjectName("statusLabel")
         self._fps_label = QLabel("FPS: —")
@@ -213,14 +234,16 @@ class PreviewWindow(QMainWindow):
         layout.addWidget(self._preview, stretch=1)
         layout.addLayout(tracking)
         layout.addLayout(sides)
+        layout.addLayout(finger_panel)
         layout.addLayout(info)
         layout.addLayout(buttons)
 
     def _show_latest_frame(self) -> None:
-        image, fps, sequence, hands = self._worker.latest()
+        image, fps, sequence, hands, fingers = self._worker.latest()
         if fps is not None:
             self._fps_label.setText(f"FPS: {fps:.1f}")
         self._apply_hand_state(hands)
+        self._apply_finger_panel(fingers)
         if image is None or sequence == self._shown_sequence:
             return
 
@@ -261,6 +284,7 @@ class PreviewWindow(QMainWindow):
         self._state = "idle"
         self._update_buttons()
         self._apply_hand_state(HandViewState())
+        self._apply_finger_panel(FingerPanel.inactive())
         if self._closing or self._error_message is not None:
             return
         self._set_status("Detenida")
@@ -289,6 +313,14 @@ class PreviewWindow(QMainWindow):
         )
         self._right_label.setText(
             "Derecha: detectada" if state.right_present else "Derecha: ausente"
+        )
+
+    def _apply_finger_panel(self, panel: FingerPanel) -> None:
+        self._left_fingers.setText(
+            format_panel_column("MANO IZQUIERDA", panel.left_lines, active=panel.active)
+        )
+        self._right_fingers.setText(
+            format_panel_column("MANO DERECHA", panel.right_lines, active=panel.active)
         )
 
     def _on_tracking_warning(self, message: str) -> None:
