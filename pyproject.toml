@@ -1,0 +1,21 @@
+# Las dependencias de terceros están fijadas en requirements.txt.
+# No se repiten aquí: instalar el paquete con `pip install -e .` no debe
+# resolver opencv-contrib-python, declarado por MediaPipe.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fingermelody"
+version = "0.1.0"
+description = "Aplicación de escritorio para interpretar melodías con los dedos frente a una cámara."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

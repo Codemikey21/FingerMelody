@@ -20,12 +20,56 @@ Permitir interpretar melodías mediante el movimiento de los dedos, sin un instr
 
 ## Tecnologías
 
-- Python
+- Python 3.11
 - OpenCV
 - MediaPipe
 - PySide6
-- Motor de audio en tiempo real
+- pygame
 
 ## Estado del desarrollo
 
-Fase inicial. El repositorio cuenta con la documentación base. La aplicación todavía no está implementada.
+Entorno de desarrollo preparado sobre Python 3.11. La aplicación todavía no implementa la visión, los gestos, el audio ni la interfaz.
+
+## Entorno de desarrollo
+
+Hace falta Python 3.11 de 64 bits. En este equipo el lanzador `python` puede apuntar a otra versión; el entorno debe crearse con `py -3.11`.
+
+Desde la raíz del repositorio, en PowerShell:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt --no-deps
+python -m pip install -e . --no-deps
+```
+
+`.venv/` está excluido en `.gitignore`. El indicador `--no-deps` evita que MediaPipe instale `opencv-contrib-python` junto a `opencv-python`. Las versiones quedan fijadas en `requirements.txt`.
+
+`pyproject.toml` solo empaqueta `src/fingermelody`, para que `python -m fingermelody.main` funcione con la estructura `src/`.
+
+### Ejecutar desde Cursor
+
+El intérprete del workspace es `.venv/Scripts/python.exe`. Cursor lo toma de la configuración local del editor; esa configuración no forma parte del repositorio.
+
+En una terminal del proyecto, con el entorno activado:
+
+```powershell
+python -m fingermelody.main
+```
+
+El programa escribe `FingerMelody está correctamente configurado.` No abre la cámara ni crea una ventana.
+
+### Pruebas
+
+```powershell
+python -m pytest
+```
+
+### Problemas habituales
+
+- Si `python` no es 3.11, vuelve a crear el entorno con `py -3.11 -m venv .venv`.
+- Si PowerShell bloquea `Activate.ps1`, ejecuta `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` y activa el entorno de nuevo. También puedes llamar a `.venv\Scripts\python.exe` sin activarlo.
+- No instales `opencv-contrib-python`, `opencv-python-headless` ni otra variante de OpenCV en este entorno. Todas publican el módulo `cv2`.
+- `python -m pip check` informa de que MediaPipe pide `opencv-contrib-python`. Es esperado: esa dependencia declarada se sustituye por `opencv-python==4.14.0.94`, que cubre las llamadas reales de MediaPipe.
+- No uses paquetes instalados en el Python global. El entorno virtual no los incluye.

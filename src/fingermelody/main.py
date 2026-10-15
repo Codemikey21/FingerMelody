@@ -1,12 +1,13 @@
-"""Punto de entrada previsto de FingerMelody.
+"""Punto de entrada de FingerMelody.
 
-No arranca la cámara, la interfaz ni el audio. Esas piezas se integrarán
-en bloques posteriores.
+Por ahora solo confirma que el entorno está configurado. No abre la cámara
+ni crea la interfaz.
 """
 
 
 def main() -> None:
-    """Reservado para el arranque de la aplicación."""
+    """Informa de que el entorno de FingerMelody está listo."""
+    print("FingerMelody está correctamente configurado.")
 
 
 if __name__ == "__main__":

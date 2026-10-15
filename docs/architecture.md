@@ -20,7 +20,7 @@ La interfaz gráfica no forma parte de esa cadena. Recibe los eventos y estados 
 | `audio` | Reproducir notas en tiempo real, controlar el volumen y permitir que varias notas suenen a la vez. |
 | `interface` | Construir la interfaz con PySide6: vista de cámara, piano virtual, controles e indicadores. |
 | `core` | Guardar la configuración y coordinar el arranque, el intercambio de datos y el cierre de los módulos. |
-| `main` | Punto de entrada previsto. Todavía no integra ninguna funcionalidad. |
+| `main` | Punto de entrada. Confirma que el entorno está configurado; todavía no integra la aplicación. |
 
 Los recursos previstos quedan fuera del código:
 
