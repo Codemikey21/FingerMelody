@@ -20,7 +20,17 @@ from fingermelody.gestures.gesture_engine import (
     finger_curl,
 )
 
-FAST = dict(smooth_alpha=1.0, press_frames=2, release_frames=2, rest_frames=2, cooldown_ms=0, highlight_ms=0)
+FAST = dict(
+    smooth_alpha=1.0,
+    press_frames=2,
+    release_frames=2,
+    rest_frames=2,
+    cooldown_ms=0,
+    highlight_ms=0,
+    press_ms=0,
+    release_ms=0,
+    rest_ms=0,
+)
 
 
 def chain(roles, bend_role, angle_deg):
@@ -170,7 +180,7 @@ def test_values_near_the_threshold_do_not_flutter():
     repeat(motor, [finger("Left", "ring", 180)], 0, 2)
     events = []
     current = None
-    for step, angle in enumerate((100, 110, 100, 110, 105, 100)):
+    for step, angle in enumerate((135, 140, 132, 145, 138, 136)):
         current = motor.update([finger("Left", "ring", angle)], 20 + step)
         events.extend(current.events)
 
@@ -253,7 +263,7 @@ def test_thumb_uses_its_own_joints_and_thresholds():
 
     index_motor = engine()
     repeat(index_motor, [finger("Left", "index", 180)], 0, 2)
-    index_held = repeat(index_motor, [finger("Left", "index", 120)], 10, 3)
+    index_held = repeat(index_motor, [finger("Left", "index", 140)], 10, 3)
     assert index_held.events == ()
     assert state_of(index_held, "LEFT_INDEX").phase == PHASE_READY
 
@@ -301,3 +311,20 @@ def test_rotated_flexed_hand_still_presses_and_straight_hand_does_not():
 
     assert pressed.events == (FingerPressEvent("LEFT_RING", 11),)
     assert state_of(pressed, "LEFT_RING").phase == PHASE_PRESSED
+
+
+def test_clear_press_counts_keeps_the_phase():
+    motor = engine(highlight_ms=200)
+    repeat(motor, [finger("Left", "index", 180)], 0, 2)
+    held = repeat(motor, [finger("Left", "index", 60)], 10, 3)
+    assert state_of(held, "LEFT_INDEX").press_count == 1
+    assert state_of(held, "LEFT_INDEX").phase == PHASE_HELD
+
+    motor.clear_press_counts()
+    later = motor.update([finger("Left", "index", 60)], 13)
+    state = state_of(later, "LEFT_INDEX")
+
+    assert state.press_count == 0
+    assert state.highlight is False
+    assert state.phase == PHASE_HELD
+    assert later.events == ()

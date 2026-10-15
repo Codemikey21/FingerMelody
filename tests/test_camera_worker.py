@@ -10,6 +10,7 @@ from PySide6.QtTest import QSignalSpy
 from fingermelody.interface.camera_worker import (
     LOST_CONNECTION_MESSAGE,
     CameraWorker,
+    FrameTiming,
     bgr_frame_to_qimage,
 )
 from fingermelody.vision.camera_manager import (
@@ -113,3 +114,26 @@ def test_fps_is_measured_from_frame_timestamps(qapp):
 
     assert worker._measure_fps(1.0) is None
     assert worker._measure_fps(1.5) == pytest.approx(2.0)
+
+
+def test_press_events_leave_the_queue_once(qapp):
+    from fingermelody.gestures.gesture_engine import FingerPressEvent, GestureUpdate
+    from fingermelody.vision.hand_tracker import HandViewState
+
+    worker = CameraWorker(FakeManager(), tracker=IdleTracker())
+    event = FingerPressEvent("LEFT_INDEX", 15)
+    image = QImage(4, 4, QImage.Format.Format_RGB888)
+    worker._publish(
+        image,
+        30.0,
+        HandViewState(),
+        GestureUpdate(active=True, events=(event,)),
+        FrameTiming(),
+    )
+    worker._queue_events((event,))
+
+    assert worker.take_events() == (event,)
+    assert worker.take_events() == ()
+    worker.request_count_reset()
+    assert worker._consume_count_reset() is True
+    assert worker._consume_count_reset() is False

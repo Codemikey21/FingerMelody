@@ -73,6 +73,7 @@ class TrackedFinger:
     press_state: str = PRESS_NOT_EVALUATED
     movement_history: tuple[tuple[float, float], ...] = ()
     activation: str | None = None
+    anchors: tuple[tuple[float, float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -142,7 +143,10 @@ class FingerDetector:
             if hand is None:
                 columns[hand_label] = _absent_lines(hand_label)
                 continue
-            fingers = tuple(_finger_from_hand(hand_label, spec, hand) for spec in FINGER_SPECS)
+            fingers = tuple(
+                _finger_from_hand(hand_label, spec, hand, anchors=_palm_anchors(hand))
+                for spec in FINGER_SPECS
+            )
             present.extend(fingers)
             columns[hand_label] = tuple(_line_for(finger) for finger in fingers)
         return FingerObservation(
@@ -163,7 +167,12 @@ def _hands_by_label(hands: tuple[TrackedHand, ...]) -> dict[str, TrackedHand]:
     return grouped
 
 
-def _finger_from_hand(hand_label: str, spec: FingerSpec, hand: TrackedHand) -> TrackedFinger:
+def _finger_from_hand(
+    hand_label: str,
+    spec: FingerSpec,
+    hand: TrackedHand,
+    anchors: tuple[tuple[float, float, float], ...] = (),
+) -> TrackedFinger:
     joints = tuple(_joint_from_hand(hand, index, role) for index, role in spec.joints)
     tip = joints[-1]
     tracked = all(
@@ -179,7 +188,21 @@ def _finger_from_hand(hand_label: str, spec: FingerSpec, hand: TrackedHand) -> T
         tip_normalized=tip.normalized,
         tip_pixel=tip.pixel,
         tracked=tracked,
+        anchors=anchors if spec.name == "thumb" else (),
     )
+
+
+def _palm_anchors(hand: TrackedHand) -> tuple[tuple[float, float, float], ...]:
+    """Muñeca, MCP del índice y MCP del medio. Sirven para la oposición del pulgar."""
+    points: list[tuple[float, float, float]] = []
+    for index in (0, 5, 9):
+        if index >= len(hand.normalized):
+            return ()
+        value = _as_normalized(hand.normalized[index])
+        if value is None:
+            return ()
+        points.append(value)
+    return tuple(points)
 
 
 def _joint_from_hand(hand: TrackedHand, index: int, role: str) -> FingerJoint:

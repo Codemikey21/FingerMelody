@@ -7,7 +7,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from fingermelody.interface.preview_window import PreviewWindow
+from fingermelody.interface.main_window import MainWindow
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -25,13 +25,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Abre la ventana provisional de la cámara."""
+    """Abre la ventana principal de FingerMelody."""
     args = parse_args(argv)
     app = QApplication([sys.argv[0]])
     app.setApplicationName("FingerMelody")
     app.setStyle("Fusion")
     try:
-        window = PreviewWindow(args.camera, args.width, args.height)
+        window = MainWindow(args.camera, args.width, args.height)
     except ValueError as exc:
         QMessageBox.critical(None, "FingerMelody", str(exc))
         raise SystemExit(1) from exc

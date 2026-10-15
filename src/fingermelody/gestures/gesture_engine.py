@@ -35,26 +35,42 @@ _MIN_SEGMENT = 1e-6
 
 @dataclass(frozen=True)
 class JointThreshold:
-    """Ángulo en grados (menor = más flexión) y extensión de 0 a 1 (1 = recto)."""
+    """Ángulo en grados (menor = más flexión) y extensión de 0 a 1 (1 = recto).
+
+    La oposición del pulgar es la distancia de la punta al índice, dividida por
+    el largo de la palma. Un valor bajo acerca el pulgar a la palma.
+    """
 
     press_angle: float
     release_angle: float
     press_extension: float
     release_extension: float
+    press_opposition: float | None = None
+    release_opposition: float | None = None
 
 
 @dataclass(frozen=True)
 class GestureConfig:
-    """Parámetros iniciales. Sustituir este objeto es la vía de calibración."""
+    """Parámetros de partida. Una calibración de reposo y flexión puede sustituirlos.
 
-    finger: JointThreshold = JointThreshold(95.0, 155.0, 0.78, 0.94)
-    thumb: JointThreshold = JointThreshold(145.0, 168.0, 0.90, 0.98)
-    smooth_alpha: float = 0.45
+    El ángulo de los cuatro dedos queda en 125° porque una flexión de unos 100°
+    nunca cruzaba el antiguo límite de 95°, y el suavizado de 0,45 tardaba
+    varios fotogramas en acercarse. El pulgar no usa solo ese ángulo: con la
+    punta lejos de la palma, la articulación MCP ya ronda 140° y la cadena no
+    llega a 168° ni a una extensión de 0,98, así que no entraba en READY.
+    """
+
+    finger: JointThreshold = JointThreshold(125.0, 155.0, 0.90, 0.96)
+    thumb: JointThreshold = JointThreshold(145.0, 168.0, 0.90, 0.98, 0.55, 0.82)
+    smooth_alpha: float = 0.72
     press_frames: int = 2
     release_frames: int = 2
-    rest_frames: int = 3
-    cooldown_ms: int = 150
+    rest_frames: int = 2
+    cooldown_ms: int = 120
     highlight_ms: int = 280
+    press_ms: int = 20
+    release_ms: int = 20
+    rest_ms: int = 30
 
     def __post_init__(self) -> None:
         for limits in (self.finger, self.thumb):
@@ -62,11 +78,17 @@ class GestureConfig:
                 raise ValueError("El ángulo de pulsación debe ser menor que el de liberación.")
             if limits.press_extension >= limits.release_extension:
                 raise ValueError("La extensión de pulsación debe ser menor que la de liberación.")
+            if (
+                limits.press_opposition is not None
+                and limits.release_opposition is not None
+                and limits.press_opposition >= limits.release_opposition
+            ):
+                raise ValueError("La oposición de pulsación debe ser menor que la de liberación.")
         if not 0.0 < self.smooth_alpha <= 1.0:
             raise ValueError("El suavizado debe estar entre 0 y 1.")
         if min(self.press_frames, self.release_frames, self.rest_frames) < 1:
             raise ValueError("La confirmación necesita al menos un fotograma.")
-        if self.cooldown_ms < 0 or self.highlight_ms < 0:
+        if min(self.press_ms, self.release_ms, self.rest_ms, self.cooldown_ms, self.highlight_ms) < 0:
             raise ValueError("Los tiempos no pueden ser negativos.")
 
 
@@ -76,6 +98,7 @@ class Curl:
 
     angle: float
     extension: float
+    opposition: float | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +122,10 @@ class FingerGestureState:
     press_count: int
     highlight: bool
     tip_pixel: tuple[int, int] | None
+    angle: float | None = None
+    extension: float | None = None
+    opposition: float | None = None
+    flex_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -158,7 +185,10 @@ def finger_curl(finger: TrackedFinger | None) -> Curl | None:
     extension = _extension(chain)
     if extension is None:
         return None
-    return Curl(angle=float(min(angles)), extension=extension)
+    opposition = None
+    if finger.name == "thumb" and finger.anchors:
+        opposition = _opposition(chain[-1], finger.anchors)
+    return Curl(angle=float(min(angles)), extension=extension, opposition=opposition)
 
 
 class GestureEngine:
@@ -174,15 +204,37 @@ class GestureEngine:
         self._listeners: list[Callable[[FingerPressEvent], None]] = []
         self._last_timestamp: int | None = None
         self._fingers = _fresh_runtimes()
+        self._rest: dict[str, Curl] = {}
+        self._flex: dict[str, Curl] = {}
 
     def subscribe(self, listener: Callable[[FingerPressEvent], None]) -> None:
         """Registra un consumidor. Se llama en el hilo que actualiza el motor."""
         self._listeners.append(listener)
 
     def reset(self) -> None:
-        """Olvida estados y contadores. No quita los suscriptores."""
+        """Olvida estados y contadores. Conserva suscriptores y la calibración."""
         self._last_timestamp = None
         self._fingers = _fresh_runtimes()
+
+    def clear_press_counts(self) -> None:
+        """Pone a cero los contadores visibles. La fase y los umbrales siguen igual."""
+        for runtime in self._fingers:
+            runtime.press_count = 0
+            runtime.highlight_until = -1
+
+    def capture_reference(self, fingers, kind: str) -> int:
+        """Guarda la pose actual como reposo o como flexión. Devuelve cuántos dedos entraron."""
+        if kind not in {"rest", "flex"}:
+            raise ValueError("La referencia debe ser reposo o flexión.")
+        target = self._rest if kind == "rest" else self._flex
+        stored = 0
+        for finger in fingers:
+            curl = finger_curl(finger)
+            if curl is None:
+                continue
+            target[finger.finger_id] = curl
+            stored += 1
+        return stored
 
     def update(
         self,
@@ -205,6 +257,15 @@ class GestureEngine:
                 listener(event)
         return self._snapshot(tuple(events))
 
+    def _effective_limits(self, runtime) -> JointThreshold:
+        base = _limits(self.config, runtime.name)
+        rest = self._rest.get(runtime.finger_id)
+        flexed = self._flex.get(runtime.finger_id)
+        if rest is None or flexed is None:
+            return base
+        calibrated = _calibrated_threshold(base, rest, flexed)
+        return base if calibrated is None else calibrated
+
     def _advance(self, runtime, finger: TrackedFinger | None, timestamp_ms: int):
         curl = finger_curl(finger)
         if curl is None:
@@ -214,28 +275,43 @@ class GestureEngine:
         alpha = self.config.smooth_alpha
         runtime.angle = _smooth(runtime.angle, curl.angle, alpha)
         runtime.extension = _smooth(runtime.extension, curl.extension, alpha)
-        posture = _posture(runtime, _limits(self.config, runtime.name))
+        if curl.opposition is None:
+            runtime.opposition = None
+        else:
+            runtime.opposition = _smooth(runtime.opposition, curl.opposition, alpha)
+        limits = self._effective_limits(runtime)
+        posture = _posture(runtime, limits)
         phase = runtime.phase
 
         if phase == PHASE_LOST:
             if posture == "extended":
+                if runtime.rest_since_ms is None:
+                    runtime.rest_since_ms = timestamp_ms
                 runtime.extend_run += 1
-                if runtime.extend_run >= self.config.rest_frames:
+                elapsed = timestamp_ms - runtime.rest_since_ms
+                if runtime.extend_run >= self.config.rest_frames and _elapsed(elapsed, self.config.rest_ms):
                     runtime.phase = PHASE_READY
                     runtime.extend_run = 0
                     runtime.flex_run = 0
+                    runtime.rest_since_ms = None
+                    runtime.flex_since_ms = None
             else:
                 runtime.extend_run = 0
+                runtime.rest_since_ms = None
             return None
 
         if phase == PHASE_READY:
             if posture == "flexed":
+                if runtime.flex_since_ms is None:
+                    runtime.flex_since_ms = timestamp_ms
                 runtime.flex_run += 1
+                elapsed = timestamp_ms - runtime.flex_since_ms
                 cooled = (
                     runtime.last_press_ms is None
                     or timestamp_ms - runtime.last_press_ms >= self.config.cooldown_ms
                 )
-                if runtime.flex_run >= self.config.press_frames and cooled:
+                confirmed = runtime.flex_run >= self.config.press_frames and _elapsed(elapsed, self.config.press_ms)
+                if confirmed and cooled:
                     runtime.phase = PHASE_PRESSED
                     runtime.flex_run = 0
                     runtime.extend_run = 0
@@ -245,24 +321,34 @@ class GestureEngine:
                     return FingerPressEvent(runtime.finger_id, timestamp_ms)
             else:
                 runtime.flex_run = 0
+                runtime.flex_since_ms = None
             return None
 
         if phase == PHASE_PRESSED:
             runtime.phase = PHASE_HELD
             runtime.extend_run = 0
             runtime.flex_run = 0
+            runtime.release_since_ms = None
             return None
 
         if phase == PHASE_HELD:
-            _hold_or_release(runtime, posture, self.config.release_frames)
+            _hold_or_release(
+                runtime,
+                posture,
+                self.config.release_frames,
+                self.config.release_ms,
+                timestamp_ms,
+            )
             return None
 
         if phase == PHASE_RELEASED:
             if posture == "extended":
                 runtime.phase = PHASE_READY
                 runtime.flex_run = 0
+                runtime.flex_since_ms = None
             elif posture == "flexed":
                 runtime.phase = PHASE_HELD
+                runtime.flex_since_ms = timestamp_ms
             return None
         return None
 
@@ -287,6 +373,10 @@ class _Runtime:
         self.press_count = 0
         self.highlight_until = -1
         self.tip_pixel: tuple[int, int] | None = None
+        self.opposition: float | None = None
+        self.flex_since_ms: int | None = None
+        self.rest_since_ms: int | None = None
+        self.release_since_ms: int | None = None
 
 
 def _fresh_runtimes() -> tuple[_Runtime, ...]:
@@ -316,33 +406,63 @@ def _posture(runtime: _Runtime, limits: JointThreshold) -> str:
     extension = runtime.extension
     if angle is None or extension is None:
         return "ambiguous"
-    if angle <= limits.press_angle and extension <= limits.press_extension:
+    joint_flex = angle <= limits.press_angle and extension <= limits.press_extension
+    joint_open = angle >= limits.release_angle and extension >= limits.release_extension
+    opposition = runtime.opposition
+    if (
+        opposition is not None
+        and limits.press_opposition is not None
+        and limits.release_opposition is not None
+    ):
+        # La punta cerca de la palma es una pulsación aunque el IP siga abierto.
+        if opposition <= limits.press_opposition or joint_flex:
+            return "flexed"
+        if opposition >= limits.release_opposition or joint_open:
+            return "extended"
+        return "ambiguous"
+    if joint_flex:
         return "flexed"
-    if angle >= limits.release_angle and extension >= limits.release_extension:
+    if joint_open:
         return "extended"
     return "ambiguous"
 
 
-def _hold_or_release(runtime: _Runtime, posture: str, release_frames: int) -> None:
+def _hold_or_release(
+    runtime: _Runtime,
+    posture: str,
+    release_frames: int,
+    release_ms: int,
+    timestamp_ms: int,
+) -> None:
     if posture == "extended":
+        if runtime.release_since_ms is None:
+            runtime.release_since_ms = timestamp_ms
         runtime.extend_run += 1
-        if runtime.extend_run >= release_frames:
+        elapsed = timestamp_ms - runtime.release_since_ms
+        if runtime.extend_run >= release_frames and _elapsed(elapsed, release_ms):
             runtime.phase = PHASE_RELEASED
             runtime.extend_run = 0
             runtime.flex_run = 0
+            runtime.release_since_ms = None
+            runtime.flex_since_ms = None
         else:
             runtime.phase = PHASE_HELD
     else:
         runtime.phase = PHASE_HELD
         runtime.extend_run = 0
+        runtime.release_since_ms = None
 
 
 def _mark_lost(runtime: _Runtime) -> None:
     runtime.phase = PHASE_LOST
     runtime.angle = None
     runtime.extension = None
+    runtime.opposition = None
     runtime.flex_run = 0
     runtime.extend_run = 0
+    runtime.flex_since_ms = None
+    runtime.rest_since_ms = None
+    runtime.release_since_ms = None
     runtime.tip_pixel = None
 
 
@@ -358,6 +478,10 @@ def _view(runtime: _Runtime, timestamp_ms: int) -> FingerGestureState:
         press_count=runtime.press_count,
         highlight=highlight or runtime.phase == PHASE_PRESSED,
         tip_pixel=runtime.tip_pixel,
+        angle=runtime.angle,
+        extension=runtime.extension,
+        opposition=runtime.opposition,
+        flex_ms=None if runtime.flex_since_ms is None else timestamp_ms - runtime.flex_since_ms,
     )
 
 
@@ -371,6 +495,10 @@ def _visual(phase: str, highlight: bool) -> str:
     if phase == PHASE_HELD:
         return VISUAL_HELD
     return VISUAL_REST
+
+
+def _elapsed(elapsed_ms: int, required_ms: int) -> bool:
+    return required_ms <= 0 or elapsed_ms >= required_ms
 
 
 def _smooth(previous: float | None, sample: float, alpha: float) -> float:
@@ -400,6 +528,62 @@ def _angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float | None:
     cosine = float(np.dot(before, after) / (norm_before * norm_after))
     cosine = float(np.clip(cosine, -1.0, 1.0))
     return float(np.degrees(np.arccos(cosine)))
+
+
+def _opposition(tip: np.ndarray, anchors: tuple[tuple[float, float, float], ...]) -> float | None:
+    """Distancia de la punta al MCP del índice, relativa al largo de la palma."""
+    if len(anchors) < 3:
+        return None
+    wrist = np.asarray(anchors[0][:3], dtype=float)
+    index_mcp = np.asarray(anchors[1][:3], dtype=float)
+    middle_mcp = np.asarray(anchors[2][:3], dtype=float)
+    if not all(np.all(np.isfinite(point)) for point in (wrist, index_mcp, middle_mcp, tip)):
+        return None
+    palm = float(np.linalg.norm(middle_mcp - wrist))
+    if palm < _MIN_SEGMENT:
+        palm = float(np.linalg.norm(index_mcp - wrist))
+    if palm < _MIN_SEGMENT:
+        return None
+    return float(np.linalg.norm(tip - index_mcp) / palm)
+
+
+def _calibrated_threshold(base: JointThreshold, rest: Curl, flexed: Curl) -> JointThreshold | None:
+    """Punto medio entre la pose abierta y la pose flexionada de esa persona."""
+    press_angle = base.press_angle
+    release_angle = base.release_angle
+    if flexed.angle < rest.angle - 15.0:
+        press_angle = (rest.angle + flexed.angle) / 2.0
+        release_angle = max(press_angle + 12.0, min(rest.angle - 4.0, rest.angle))
+    press_extension = base.press_extension
+    release_extension = base.release_extension
+    if flexed.extension < rest.extension - 0.04:
+        press_extension = (rest.extension + flexed.extension) / 2.0
+        release_extension = max(press_extension + 0.03, min(rest.extension - 0.01, rest.extension))
+    press_opposition = base.press_opposition
+    release_opposition = base.release_opposition
+    if (
+        rest.opposition is not None
+        and flexed.opposition is not None
+        and flexed.opposition < rest.opposition - 0.08
+    ):
+        press_opposition = (rest.opposition + flexed.opposition) / 2.0
+        release_opposition = max(press_opposition + 0.12, rest.opposition - 0.05)
+    if press_angle >= release_angle or press_extension >= release_extension:
+        return None
+    if (
+        press_opposition is not None
+        and release_opposition is not None
+        and press_opposition >= release_opposition
+    ):
+        return None
+    return JointThreshold(
+        press_angle,
+        release_angle,
+        press_extension,
+        release_extension,
+        press_opposition,
+        release_opposition,
+    )
 
 
 def _extension(chain: tuple[np.ndarray, ...]) -> float | None:
