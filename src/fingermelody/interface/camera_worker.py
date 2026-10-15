@@ -74,8 +74,13 @@ class CameraWorker(QThread):
     presses_detected = Signal()
     calibration_saved = Signal(str)
 
-    def __init__(self, manager: CameraManager, tracker: HandTracker | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        manager: CameraManager,
+        tracker: HandTracker | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
         self._manager = manager
         self._tracker = tracker
         self._mutex = QMutex()

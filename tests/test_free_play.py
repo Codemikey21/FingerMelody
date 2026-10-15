@@ -11,6 +11,7 @@ from fingermelody.interface.piano_widget import PianoWidget
 from fingermelody.interface.preview_window import PreviewWindow
 from fingermelody.music.session import (
     FREE_PLAY,
+    GUIDED_PLAY,
     ORIGIN_CLICK,
     ORIGIN_GESTURE,
     PHASE_IDLE,
@@ -39,8 +40,9 @@ def session() -> tuple[SessionController, Clock]:
 def test_only_free_play_is_available_and_other_modes_are_rejected():
     modes = available_modes()
 
-    assert [item.code for item in modes] == [FREE_PLAY]
+    assert [item.code for item in modes] == [FREE_PLAY, GUIDED_PLAY]
     assert modes[0].title == "Modo libre"
+    assert modes[1].title == "Jingle Bells"
     with pytest.raises(ValueError):
         SessionController(mode="guided")
 
@@ -199,8 +201,11 @@ def test_free_play_window_blocks_pause_and_skips_a_held_finger_on_resume(qapp):
         "finishSessionButton",
     )}
 
-    assert window.findChild(QLabel, "modeLabel").text() == "Modo libre"
+    assert window.findChild(QLabel, "modeLabel").text() == "Jingle Bells"
+    assert window.findChild(QPushButton, "freeModeButton") is None
     assert window.findChild(QPushButton, "guidedButton") is None
+    assert window._highway.isHidden() is False
+    window.select_free_mode()
     assert buttons["startSessionButton"].isEnabled()
     assert not buttons["pauseSessionButton"].isEnabled()
     window._piano.play_key("C4")

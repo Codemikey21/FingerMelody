@@ -1,8 +1,6 @@
 """Sesión del modo libre. Recibe eventos musicales y no ve la cámara ni el audio.
 
-El modo guiado, incluida Jingle Bells, se añadirá como otra entrada de
-``available_modes()``. Mientras no esté en esa lista, no hay controlador ni
-botón para ese modo.
+El modo guiado vive en ``guided.py``. Esta sesión solo interpreta en libertad.
 """
 
 from __future__ import annotations
@@ -52,9 +50,15 @@ class HistoryEntry:
     elapsed_ms: int
 
 
+GUIDED_PLAY = "guided"
+
+
 def available_modes() -> tuple[PlayMode, ...]:
-    """Modos que ya se pueden usar. Hoy solo está el modo libre."""
-    return (PlayMode(FREE_PLAY, "Modo libre"),)
+    """Modos con comportamiento real. El guiado no usa SessionController."""
+    return (
+        PlayMode(FREE_PLAY, "Modo libre"),
+        PlayMode(GUIDED_PLAY, "Jingle Bells"),
+    )
 
 
 class SessionController:
@@ -69,9 +73,8 @@ class SessionController:
         clock: Callable[[], float] | None = None,
         mode: str = FREE_PLAY,
     ) -> None:
-        known = {item.code for item in available_modes()}
-        if mode not in known:
-            raise ValueError("Ese modo todavía no está disponible.")
+        if mode != FREE_PLAY:
+            raise ValueError("La sesión libre solo admite el modo libre.")
         self.mode = mode
         self._clock = clock or time.monotonic
         self._phase = PHASE_IDLE

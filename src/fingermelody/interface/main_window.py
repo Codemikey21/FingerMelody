@@ -8,13 +8,13 @@ from collections import deque
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSlider,
-    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -28,12 +28,16 @@ from fingermelody.gestures.gesture_engine import (
 )
 from fingermelody.interface.camera_panel import CameraPanel
 from fingermelody.interface.camera_worker import CameraWorker
-from fingermelody.interface.info_panel import InfoPanel, finger_caption
+from fingermelody.interface.info_panel import InfoPanel, SessionBadge, finger_caption
+from fingermelody.interface.note_highway import NoteHighway
 from fingermelody.interface.piano_widget import PianoWidget
 from fingermelody.interface.settings_dialog import SettingsDialog
 from fingermelody.interface.styles import STYLESHEET, restyle
+from fingermelody.music.guided import GuidedMode
 from fingermelody.music.note_mapper import NoteMapper
 from fingermelody.music.session import (
+    FREE_PLAY,
+    GUIDED_PLAY,
     ORIGIN_CLICK,
     ORIGIN_GESTURE,
     PHASE_IDLE,
@@ -42,7 +46,6 @@ from fingermelody.music.session import (
     HistoryEntry,
     MusicalEvent,
     SessionController,
-    available_modes,
 )
 from fingermelody.vision.camera_manager import CameraManager
 from fingermelody.vision.hand_tracker import (
@@ -73,9 +76,12 @@ class MainWindow(QMainWindow):
         self._shown_sequence = 0
         self._current_image: QImage | None = None
         self._rescaling = False
-        self._split_ready = False
+        self._camera_placed = False
         self._muted = False
+        self._mode = GUIDED_PLAY
+        self._capsules: tuple[tuple[str, str, str], ...] = ()
         self._session = SessionController()
+        self._guide = GuidedMode()
         self._played_keys: set[tuple[str, int]] = set()
         self._played_order: deque[tuple[str, int]] = deque()
         self._diagnostics = False
@@ -85,7 +91,7 @@ class MainWindow(QMainWindow):
         self._diag_play_ms: float | None = None
         self._calibration_note = ""
         self._manager = CameraManager(device_index, width, height)
-        self._worker = CameraWorker(self._manager)
+        self._worker = CameraWorker(self._manager, parent=self)
         self._worker.capture_started.connect(self._on_capture_started)
         self._worker.capture_stopped.connect(self._on_capture_stopped)
         self._worker.error_occurred.connect(self._on_error)
@@ -137,14 +143,17 @@ class MainWindow(QMainWindow):
         self._finish_stop()
 
     def shutdown(self) -> None:
-        """Detiene la captura y el audio antes de cerrar la ventana."""
+        """Detiene temporizadores, captura y audio antes de destruir la ventana."""
+        for timer in self.findChildren(QTimer):
+            timer.stop()
+        if hasattr(self, "_highway"):
+            self._highway.shutdown()
         if not self._audio_closed:
             self._audio.shutdown()
             self._audio_closed = True
         if self._closing and self._state == "idle" and not self._worker.isRunning():
             return
         self._closing = True
-        self._timer.stop()
         if self._worker.isRunning():
             self._worker.requestInterruption()
             self._worker.wait(2000)
@@ -156,12 +165,13 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:  # noqa: N802 - firma de Qt
         super().showEvent(event)
-        self._balance_split()
+        self._place_camera(reveal=True)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - firma de Qt
         super().resizeEvent(event)
-        self._balance_split()
+        self._place_camera(reveal=False)
         self._rescale_preview()
+        self._sync_highway_lanes()
 
     def _build_ui(self, device_index: int, width: int, height: int) -> None:
         central = QWidget()
@@ -177,37 +187,20 @@ class MainWindow(QMainWindow):
         title.setObjectName("titleLabel")
         self._camera_chip = QLabel("Cámara inactiva")
         self._camera_chip.setObjectName("cameraChip")
-        self._tracking_label = QLabel(IDLE_TRACKING_MESSAGE)
-        self._tracking_label.setObjectName("trackingLabel")
         self._volume_label = QLabel("Volumen 70 %")
         self._volume_label.setObjectName("volumeLabel")
         self._volume = QSlider(Qt.Orientation.Horizontal)
         self._volume.setObjectName("volumeSlider")
         self._volume.setRange(0, 100)
         self._volume.setValue(70)
-        self._volume.setFixedWidth(140)
+        self._volume.setFixedWidth(120)
         self._volume.valueChanged.connect(self._change_volume)
         settings = QPushButton("Configuración")
         settings.setObjectName("settingsButton")
         settings.clicked.connect(self._open_settings)
 
-        header = QHBoxLayout()
-        header.setSpacing(10)
-        header.addWidget(title)
-        header.addWidget(self._camera_chip)
-        header.addWidget(self._tracking_label, stretch=1)
-        header.addWidget(self._volume_label)
-        header.addWidget(self._volume)
-        header.addWidget(settings)
-
-        self._camera_panel = CameraPanel(f"Dispositivo {device_index} · {width}×{height}")
-        self._device_label = self._camera_panel.device
-        self._preview = self._camera_panel.preview
-        self._fps_label = self._camera_panel.fps
-        self._preview.resized.connect(self._rescale_preview)
-
         self._info = InfoPanel()
-        self._info.mode.setText(available_modes()[0].title)
+        self._info.mode.setText("Jingle Bells")
         self._info.start_session.clicked.connect(self.start_session)
         self._info.pause_session.clicked.connect(self.pause_session)
         self._info.resume_session.clicked.connect(self.resume_session)
@@ -224,6 +217,36 @@ class MainWindow(QMainWindow):
         self._audio_status.setText(self._audio.status_message)
         self._left_fingers = self._info.left_fingers
         self._right_fingers = self._info.right_fingers
+        self._stage_session = SessionBadge("En espera")
+        self._stage_session.setObjectName("stageSessionLabel")
+
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.addWidget(title)
+        header.addWidget(self._camera_chip)
+        header.addStretch(1)
+        header.addWidget(self._volume_label)
+        header.addWidget(self._volume)
+        header.addWidget(settings)
+        header.addWidget(self._info.session)
+
+        self._camera_panel = CameraPanel(f"Dispositivo {device_index} · {width}×{height}")
+        self._device_label = self._camera_panel.device
+        self._preview = self._camera_panel.preview
+        self._fps_label = self._camera_panel.fps
+        self._preview.resized.connect(self._rescale_preview)
+        self._start_button = QPushButton("Iniciar")
+        self._start_button.setObjectName("startButton")
+        self._start_button.clicked.connect(self.start_camera)
+        self._stop_button = QPushButton("Detener")
+        self._stop_button.setObjectName("stopButton")
+        self._stop_button.clicked.connect(self.stop_camera)
+        self._camera_panel._actions.addWidget(self._start_button)
+        self._camera_panel._actions.addWidget(self._stop_button)
+        details = QPushButton("Detalles")
+        details.setObjectName("detailsButton")
+        details.clicked.connect(self._open_details)
+        self._camera_panel._actions.addWidget(details)
 
         self._piano = PianoWidget()
         self._piano.set_captions(
@@ -233,23 +256,48 @@ class MainWindow(QMainWindow):
             }
         )
         self._piano.note_pressed.connect(self._play_clicked_note)
+        self._piano.lanes_changed.connect(self._sync_highway_lanes)
         self._apply_gestures(GestureUpdate.inactive())
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setObjectName("mainSplit")
-        self._splitter = splitter
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(self._camera_panel)
-        splitter.addWidget(self._info)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        self._guide_title = QLabel(self._guide.title)
+        self._guide_title.setObjectName("guideTitleLabel")
+        self._guide_progress = QLabel("0 / 0")
+        self._guide_progress.setObjectName("guideProgressLabel")
+        self._guide_next = QLabel("Ahora: — · Siguiente: —")
+        self._guide_next.setObjectName("guideNextLabel")
+        self._guide_header = QWidget()
+        self._guide_header.setObjectName("guideHeader")
+        guide_row = QHBoxLayout(self._guide_header)
+        guide_row.setContentsMargins(8, 2, 8, 0)
+        guide_row.setSpacing(14)
+        guide_row.addWidget(self._guide_title)
+        guide_row.addWidget(self._guide_progress)
+        guide_row.addWidget(self._guide_next, stretch=1)
+        guide_row.addWidget(self._last_note)
+        guide_row.addWidget(self._stage_session)
+        self._highway = NoteHighway()
+        self._highway.resized.connect(self._sync_highway_lanes)
 
-        self._start_button = QPushButton("Iniciar cámara")
-        self._start_button.setObjectName("startButton")
-        self._start_button.clicked.connect(self.start_camera)
-        self._stop_button = QPushButton("Detener cámara")
-        self._stop_button.setObjectName("stopButton")
-        self._stop_button.clicked.connect(self.stop_camera)
+        self._stage = QWidget()
+        self._stage.setObjectName("stage")
+        stage_layout = QVBoxLayout(self._stage)
+        stage_layout.setContentsMargins(8, 8, 8, 8)
+        stage_layout.setSpacing(6)
+        stage_layout.addWidget(self._guide_header)
+        stage_layout.addWidget(self._highway, stretch=1)
+        stage_layout.addWidget(self._info.history)
+        session_row = QHBoxLayout()
+        session_row.setSpacing(8)
+        session_row.addWidget(self._info.start_session)
+        session_row.addWidget(self._info.pause_session)
+        session_row.addWidget(self._info.resume_session)
+        session_row.addWidget(self._info.finish_session)
+        session_row.addStretch(1)
+        stage_layout.addLayout(session_row)
+        self._camera_panel.setParent(self._stage)
+
+        self._tracking_label = QLabel(IDLE_TRACKING_MESSAGE)
+        self._tracking_label.setObjectName("trackingLabel")
         self._mute_button = QPushButton("Silenciar audio")
         self._mute_button.setObjectName("muteButton")
         self._mute_button.clicked.connect(self._toggle_mute)
@@ -264,21 +312,30 @@ class MainWindow(QMainWindow):
         self._diagnostic_button.setCheckable(True)
         self._diagnostic_button.toggled.connect(self._toggle_diagnostics)
         self._stop_audio.setEnabled(self._audio.available)
-
-        controls = QHBoxLayout()
-        controls.setSpacing(8)
-        controls.addWidget(self._start_button)
-        controls.addWidget(self._stop_button)
-        controls.addWidget(self._mute_button)
-        controls.addWidget(self._stop_audio)
-        controls.addWidget(self._reset_button)
-        controls.addWidget(self._diagnostic_button)
-        controls.addStretch(1)
+        technical = QHBoxLayout()
+        technical.setSpacing(8)
+        technical.addWidget(self._mute_button)
+        technical.addWidget(self._stop_audio)
+        technical.addWidget(self._reset_button)
+        technical.addWidget(self._diagnostic_button)
+        self._details = QDialog(self)
+        self._details.setObjectName("detailsDialog")
+        self._details.setWindowTitle("Detalles")
+        self._details.setModal(False)
+        details_layout = QVBoxLayout(self._details)
+        details_layout.setContentsMargins(16, 16, 16, 16)
+        details_layout.setSpacing(8)
+        details_layout.addWidget(self._tracking_label)
+        details_layout.addWidget(self._last_finger)
+        details_layout.addLayout(technical)
+        details_layout.addWidget(self._info)
+        self._details.resize(460, 640)
+        self._details.hide()
 
         layout.addLayout(header)
-        layout.addWidget(splitter, stretch=1)
+        layout.addWidget(self._stage, stretch=1)
         layout.addWidget(self._piano)
-        layout.addLayout(controls)
+        self._show_guided(True)
         self._sync_camera_chip()
 
     def _show_latest_frame(self) -> None:
@@ -316,15 +373,24 @@ class MainWindow(QMainWindow):
             )
         self._preview.setPixmap(pixmap)
 
-    def _balance_split(self) -> None:
-        if self._split_ready or not hasattr(self, "_splitter"):
+    def _place_camera(self, reveal: bool) -> None:
+        """Tarjeta flotante sobre la carretera. El tamaño final se aplica al momento."""
+        if not hasattr(self, "_stage"):
             return
-        total = self._splitter.width()
-        if total < 400:
+        area = self._stage.rect()
+        if area.width() < 280 or area.height() < 180:
             return
-        self._split_ready = True
-        info = min(480, max(340, int(total * 0.36)))
-        self._splitter.setSizes([max(1, total - info), info])
+        card_w, card_h = 292, 206
+        moved = self._camera_panel.geometry().topLeft()
+        self._camera_panel.setGeometry(area.width() - card_w - 16, 18, card_w, card_h)
+        self._camera_panel.raise_()
+        if reveal or (self._camera_placed and moved != self._camera_panel.pos()):
+            self._camera_panel.reveal()
+        self._camera_placed = True
+
+    def _open_details(self) -> None:
+        self._details.show()
+        self._details.raise_()
 
     def _rescale_preview(self) -> None:
         if self._rescaling or self._current_image is None:
@@ -423,10 +489,7 @@ class MainWindow(QMainWindow):
             if not note:
                 continue
             self._diag_dispatch_ms = dispatch_ms
-            accepted = self._perform(
-                MusicalEvent(note, ORIGIN_GESTURE, event.finger_id),
-                pulse=False,
-            )
+            accepted = self._perform(MusicalEvent(note, ORIGIN_GESTURE, event.finger_id))
             if accepted is None:
                 self._diag_event = f"Evento {event.finger_id} → {note} (sin reproducción)"
                 continue
@@ -443,7 +506,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _play_clicked_note(self, note_name: str) -> None:
-        self._perform(MusicalEvent(note_name, ORIGIN_CLICK), pulse=True)
+        self._perform(MusicalEvent(note_name, ORIGIN_CLICK))
 
     def _play_note(self, note_name: str) -> bool:
         try:
@@ -472,7 +535,9 @@ class MainWindow(QMainWindow):
             self._audio_status.setProperty("error", "no")
             restyle(self._audio_status)
 
-    def _perform(self, event: MusicalEvent, *, pulse: bool) -> HistoryEntry | None:
+    def _perform(self, event: MusicalEvent) -> HistoryEntry | None:
+        if self._mode == GUIDED_PLAY:
+            return self._perform_guided(event)
         accepted = self._session.submit(event)
         if accepted is None:
             return None
@@ -480,9 +545,32 @@ class MainWindow(QMainWindow):
         self._play_note(accepted.note)
         self._diag_play_ms = (time.perf_counter() - started) * 1000.0
         self._show_performance(accepted)
-        if pulse:
-            self._piano.pulse_click(accepted.note)
+        self._piano.pulse_click(accepted.note)
         return accepted
+
+    def _perform_guided(self, event: MusicalEvent) -> HistoryEntry | None:
+        finger_id = event.finger_id if event.origin == ORIGIN_GESTURE else None
+        hit = self._guide.submit(event.note, finger_id)
+        if hit is None:
+            return None
+        started = time.perf_counter()
+        self._play_note(hit.note)
+        self._diag_play_ms = (time.perf_counter() - started) * 1000.0
+        self._piano.pulse_click(hit.note)
+        self._highway.notify_hit(hit.note)
+        self._last_note.setText(f"Última nota: {hit.note}")
+        if event.finger_id:
+            self._last_finger.setText(f"Dedo: {finger_caption(event.finger_id)}")
+        else:
+            self._last_finger.setText("Dedo: Teclado")
+        self._press_count.setText(f"Pulsaciones: {self._guide.press_count}")
+        origin = "gesto" if event.origin == ORIGIN_GESTURE else "clic"
+        who = event.finger_id or "teclado"
+        self._capsules = ((hit.note, origin, who), *self._capsules)[:4]
+        self._info.history.set_rows(self._capsules)
+        self._refresh_guide()
+        self._update_buttons()
+        return HistoryEntry(hit.note, event.finger_id, event.origin, 0)
 
     def _show_performance(self, entry: HistoryEntry) -> None:
         self._press_count.setText(f"Pulsaciones: {self._session.press_count}")
@@ -494,16 +582,15 @@ class MainWindow(QMainWindow):
         self._refresh_history()
 
     def _refresh_history(self) -> None:
-        entries = self._session.recent(4)
-        if not entries:
-            self._info.history.setText("Historial: —")
-            return
-        lines = ["Historial"]
-        for entry in entries:
-            origin = "gesto" if entry.origin == ORIGIN_GESTURE else "clic"
-            who = entry.finger_id or "teclado"
-            lines.append(f"{entry.note} · {origin} · {who} · {entry.elapsed_ms / 1000:.2f} s")
-        self._info.history.setText("\n".join(lines))
+        rows = tuple(
+            (
+                entry.note,
+                "gesto" if entry.origin == ORIGIN_GESTURE else "clic",
+                entry.finger_id or "teclado",
+            )
+            for entry in self._session.recent(4)
+        )
+        self._info.history.set_rows(rows)
 
     def _change_volume(self, value: int) -> None:
         if self._muted:
@@ -541,7 +628,27 @@ class MainWindow(QMainWindow):
         self._audio.stop_all()
         self._piano.clear_clicks()
 
+    def select_free_mode(self) -> None:
+        if self._mode == GUIDED_PLAY and self._guide.phase != PHASE_IDLE:
+            self._guide.finish()
+        self._mode = FREE_PLAY
+        self._show_guided(False)
+        self._info.mode.setText("Modo libre")
+        self._update_buttons()
+
+    def select_guided_mode(self) -> None:
+        if self._mode == FREE_PLAY and self._session.phase != PHASE_IDLE:
+            self.finish_session()
+        self._mode = GUIDED_PLAY
+        self._show_guided(True)
+        self._info.mode.setText("Jingle Bells")
+        self._refresh_guide()
+        self._update_buttons()
+
     def start_session(self) -> None:
+        if self._mode == GUIDED_PLAY:
+            self._start_guided()
+            return
         if self._session.phase != PHASE_IDLE:
             return
         self._handle_press_events(self._worker.take_events())
@@ -554,32 +661,83 @@ class MainWindow(QMainWindow):
         self._refresh_history()
         self._update_buttons()
 
+    def _start_guided(self) -> None:
+        if self._guide.phase != PHASE_IDLE:
+            return
+        self._handle_press_events(self._worker.take_events())
+        _image, _fps, _sequence, _hands, gestures, _timing = self._worker.latest()
+        if not self._guide.start(self._held_finger_ids(gestures)):
+            return
+        self._last_note.setText("Última nota: —")
+        self._last_finger.setText("Dedo: —")
+        self._press_count.setText("Pulsaciones: 0")
+        self._refresh_guide()
+        self._update_buttons()
+
     def pause_session(self) -> None:
         pending = self._worker.take_events()
-        if not self._session.pause():
+        controller = self._guide if self._mode == GUIDED_PLAY else self._session
+        if not controller.pause():
             self._handle_press_events(pending)
             return
         self._handle_press_events(pending)
         self._stop_sounds()
+        if self._mode == GUIDED_PLAY:
+            self._highway.set_running(False)
         self._update_buttons()
 
     def resume_session(self) -> None:
-        if self._session.phase != PHASE_PAUSED:
+        controller = self._guide if self._mode == GUIDED_PLAY else self._session
+        if controller.phase != PHASE_PAUSED:
             return
         self._handle_press_events(self._worker.take_events())
         _image, _fps, _sequence, _hands, gestures, _timing = self._worker.latest()
-        if not self._session.resume(self._held_finger_ids(gestures)):
+        if not controller.resume(self._held_finger_ids(gestures)):
             return
+        if self._mode == GUIDED_PLAY:
+            self._highway.set_running(True)
         self._update_buttons()
 
     def finish_session(self) -> None:
         pending = self._worker.take_events()
-        if not self._session.finish():
+        controller = self._guide if self._mode == GUIDED_PLAY else self._session
+        if not controller.finish():
             self._handle_press_events(pending)
             return
         self._handle_press_events(pending)
         self._stop_sounds()
+        if self._mode == GUIDED_PLAY:
+            self._highway.set_running(False)
+            self._refresh_guide()
         self._update_buttons()
+
+    def _show_guided(self, visible: bool) -> None:
+        self._guide_header.setVisible(visible)
+        self._highway.setVisible(visible)
+        if visible:
+            self._refresh_guide()
+            self._sync_highway_lanes()
+        else:
+            self._highway.set_running(False)
+
+    def _refresh_guide(self) -> None:
+        self._highway.set_chart(self._guide.chart(), self._guide.index)
+        self._highway.set_running(self._guide.phase == PHASE_PLAYING)
+        self._guide_progress.setText(f"{self._guide.index} / {self._guide.total}")
+        current = self._guide.current_note() or "—"
+        upcoming = self._guide.upcoming_note() or "—"
+        self._guide_next.setText(f"Ahora: {current} · Siguiente: {upcoming}")
+        self._sync_highway_lanes()
+
+    def _sync_highway_lanes(self) -> None:
+        if not self._highway.isVisible():
+            return
+        lanes = []
+        for name, rect in self._piano.white_rects():
+            center = self._piano.mapToGlobal(rect.center().toPoint())
+            local = self._highway.mapFromGlobal(center)
+            lanes.append((name, float(local.x()), float(rect.width())))
+        self._highway.set_lanes(tuple(lanes))
 
     def _reset_press_count(self) -> None:
         self._session.reset_counters()
@@ -597,35 +755,52 @@ class MainWindow(QMainWindow):
         }
 
     def _release_open_fingers(self, update: GestureUpdate) -> None:
-        if self._session.phase != PHASE_PLAYING or not update.active:
+        controller = self._guide if self._mode == GUIDED_PLAY else self._session
+        if controller.phase != PHASE_PLAYING or not update.active:
             return
         held = self._held_finger_ids(update)
-        for finger_id in tuple(self._session.suppressed):
+        for finger_id in tuple(controller.suppressed):
             if finger_id not in held:
-                self._session.release_finger(finger_id)
+                controller.release_finger(finger_id)
+
+    def _active_controller(self):
+        if self._mode == GUIDED_PLAY:
+            return self._guide
+        return self._session
 
     def _session_caption(self) -> tuple[str, str]:
-        phase = self._session.phase
+        controller = self._active_controller()
+        phase = controller.phase
         if phase == PHASE_PLAYING:
-            return "Interpretando", PHASE_PLAYING
+            return "Activa", PHASE_PLAYING
         if phase == PHASE_PAUSED:
-            return "En pausa", PHASE_PAUSED
-        if self._session.finished:
-            return "Sesión finalizada", "finished"
-        return "Sesión sin iniciar", PHASE_IDLE
+            return "Pausada", PHASE_PAUSED
+        if controller.finished:
+            return "Finalizada", "finished"
+        return "En espera", PHASE_IDLE
 
     def _refresh_session_controls(self) -> None:
-        phase = self._session.phase
+        phase = self._active_controller().phase
         self._info.start_session.setEnabled(phase == PHASE_IDLE)
         self._info.pause_session.setEnabled(phase == PHASE_PLAYING)
         self._info.resume_session.setEnabled(phase == PHASE_PAUSED)
         self._info.finish_session.setEnabled(phase != PHASE_IDLE)
         self._piano.setEnabled(phase == PHASE_PLAYING)
         caption, marker = self._session_caption()
-        self._info.session.setText(caption)
-        if self._info.session.property("phase") != marker:
-            self._info.session.setProperty("phase", marker)
-            restyle(self._info.session)
+        changed = False
+        for badge in (self._info.session, self._stage_session):
+            badge.setText(caption)
+            if badge.property("phase") != marker:
+                badge.setProperty("phase", marker)
+                restyle(badge)
+                changed = True
+        if changed:
+            self._fade_session_badge()
+
+    def _fade_session_badge(self) -> None:
+        """Fundido y pulso del badge. Solo corre al cambiar el estado."""
+        self._info.session.fade_in()
+        self._stage_session.fade_in()
 
     def _open_settings(self) -> None:
         if self._muted and self._audio.available:

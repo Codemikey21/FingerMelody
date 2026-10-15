@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from fingermelody.gestures.finger_detector import FINGER_SPECS, finger_id
+from fingermelody.interface.history_strip import NoteHistoryStrip
 
 
 def finger_caption(finger_id_value: str) -> str:
@@ -27,20 +28,16 @@ def finger_caption(finger_id_value: str) -> str:
 
 
 class InfoPanel(QFrame):
-    """Última nota, manos, contador y estado de la cámara y del sonido."""
+    """Datos técnicos. La escena principal no los muestra como columna fija."""
 
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("infoPanel")
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setMinimumWidth(300)
-        self.setMaximumWidth(480)
 
-        self.mode = QLabel("Modo libre")
+        self.mode = QLabel("Jingle Bells")
         self.mode.setObjectName("modeLabel")
-        self.session = QLabel("Sesión sin iniciar")
-        self.session.setObjectName("sessionStatusLabel")
-        self.session.setProperty("phase", "idle")
+        self.session = SessionBadge("En espera")
         self.start_session = QPushButton("Iniciar sesión")
         self.start_session.setObjectName("startSessionButton")
         self.pause_session = QPushButton("Pausar")
@@ -49,9 +46,7 @@ class InfoPanel(QFrame):
         self.resume_session.setObjectName("resumeSessionButton")
         self.finish_session = QPushButton("Finalizar")
         self.finish_session.setObjectName("finishSessionButton")
-        self.history = QLabel("Historial: —")
-        self.history.setObjectName("historyLabel")
-        self.history.setWordWrap(True)
+        self.history = NoteHistoryStrip()
 
         self.hands = QLabel("Manos: —")
         self.hands.setObjectName("handsLabel")
@@ -104,30 +99,11 @@ class InfoPanel(QFrame):
         sides.addWidget(self.right)
         sides.addStretch(1)
 
-        heading = QHBoxLayout()
-        heading.setContentsMargins(0, 0, 0, 0)
-        heading.setSpacing(8)
-        heading.addWidget(self.mode)
-        heading.addWidget(self.session, stretch=1)
-
-        actions = QGridLayout()
-        actions.setContentsMargins(0, 0, 0, 0)
-        actions.setHorizontalSpacing(8)
-        actions.setVerticalSpacing(8)
-        actions.addWidget(self.start_session, 0, 0)
-        actions.addWidget(self.pause_session, 0, 1)
-        actions.addWidget(self.resume_session, 1, 0)
-        actions.addWidget(self.finish_session, 1, 1)
-
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
-        layout.addLayout(heading)
-        layout.addLayout(actions)
-        layout.addWidget(self.last_note)
-        layout.addWidget(self.last_finger)
+        layout.addWidget(self.mode)
         layout.addWidget(self.presses)
-        layout.addWidget(self.history)
         layout.addWidget(self.hands)
         layout.addLayout(sides)
         layout.addWidget(self.fps)
@@ -135,6 +111,66 @@ class InfoPanel(QFrame):
         layout.addWidget(self.audio)
         layout.addWidget(self.diagnostic)
         layout.addWidget(scroll, stretch=1)
+
+
+class SessionBadge(QLabel):
+    """Chip de estado. El fundido pinta solo esta etiqueta, durante unos 160 ms."""
+
+    _COLORS = {
+        "playing": ("#04221c", "#3ee0d0"),
+        "paused": ("#2a1020", "#ffb4c0"),
+        "finished": ("#1a1230", "#c4b6ff"),
+        "idle": ("#c5cad6", "#242836"),
+    }
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self.setObjectName("sessionStatusLabel")
+        self.setProperty("phase", "idle")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._veil = 1.0
+        self._pulse = 0.0
+        self._font = QFont("Segoe UI", 10)
+        self._font.setBold(True)
+        self._timer = QTimer(self)
+        self._timer.setInterval(32)
+        self._timer.timeout.connect(self._tick)
+        self.setMinimumSize(108, 26)
+
+    def fade_in(self) -> None:
+        self._veil = 0.35
+        self._pulse = 1.0
+        if not self._timer.isActive():
+            self._timer.start()
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - firma de Qt
+        phase = self.property("phase") or "idle"
+        ink, fill = self._COLORS.get(phase, self._COLORS["idle"])
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if self._pulse > 0.04:
+            ring = QColor(fill)
+            ring.setAlpha(int(90 * self._pulse))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(ring)
+            grow = 4.0 * self._pulse
+            painter.drawRoundedRect(self.rect().adjusted(int(-grow), int(-grow), int(grow), int(grow)), 13, 13)
+        painter.setOpacity(self._veil)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(self.rect().adjusted(0, 1, -1, -1), 11, 11)
+        painter.setPen(QColor(ink))
+        painter.setFont(self._font)
+        painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignCenter), self.text())
+        painter.end()
+
+    def _tick(self) -> None:
+        self._veil = min(1.0, self._veil + 0.14)
+        self._pulse = max(0.0, self._pulse - 0.18)
+        if self._veil >= 1.0 and self._pulse <= 0.0:
+            self._timer.stop()
+        self.update()
 
 
 def _finger_label(object_name: str) -> QLabel:

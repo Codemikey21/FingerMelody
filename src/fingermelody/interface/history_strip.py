@@ -21,6 +21,7 @@ class NoteHistoryStrip(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._rows: tuple[tuple[str, str, str], ...] = ()
         self._opacity: dict[tuple[str, str, str], float] = {}
+        self._leaving: list[list[object]] = []
         self._font = QFont("Segoe UI", 10)
         self._font.setBold(True)
         self._timer = QTimer(self)
@@ -37,11 +38,11 @@ class NoteHistoryStrip(QWidget):
             return
         alive = set(fresh)
         previous = self._opacity
+        for row in self._rows:
+            if row not in alive:
+                self._leaving.append([row, previous.get(row, 1.0), 0.0])
         self._opacity = {row: previous.get(row, 0.0) for row in fresh}
         self._rows = fresh
-        for row in list(previous):
-            if row not in alive:
-                previous.pop(row, None)
         self.setToolTip(self.caption())
         self._arm_timer()
         self.update()
@@ -61,24 +62,31 @@ class NoteHistoryStrip(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setFont(self._font)
-        if not self._rows:
+        metrics = painter.fontMetrics()
+        if not self._rows and not self._leaving:
             painter.setPen(QColor("#9aa3b5"))
             painter.drawText(self.rect(), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), "Historial: —")
             painter.end()
             return
-        metrics = painter.fontMetrics()
-        x = 0.0
-        y = 2.0
-        height = 28.0
-        limit = max(1.0, float(self.width()))
-        for row in self._rows:
+        for row, opacity, rise in self._leaving:
             note, origin, _who = row
-            width = min(limit, max(86.0, metrics.horizontalAdvance(f"{note}  {origin}") + 22.0))
-            if x > 0.0 and x + width > limit:
-                x = 0.0
-                y += height + 6.0
-            _paint_capsule(painter, QRectF(x, y, width, height), note, origin, self._opacity.get(row, 1.0))
-            x += width + 6.0
+            width = min(max(1.0, float(self.width())), max(86.0, metrics.horizontalAdvance(f"{note}  {origin}") + 22.0))
+            _paint_capsule(painter, QRectF(0, 2.0 - float(rise), width, 28.0), note, origin, float(opacity))
+        if self._rows:
+            x = 0.0
+            y = 2.0
+            height = 28.0
+            limit = max(1.0, float(self.width()))
+            for row in self._rows:
+                note, origin, _who = row
+                opacity = self._opacity.get(row, 1.0)
+                width = min(limit, max(86.0, metrics.horizontalAdvance(f"{note}  {origin}") + 22.0))
+                if x > 0.0 and x + width > limit:
+                    x = 0.0
+                    y += height + 6.0
+                slide = (1.0 - opacity) * 18.0
+                _paint_capsule(painter, QRectF(x + slide, y, width, height), note, origin, opacity)
+                x += width + 6.0
         painter.end()
 
     def _on_tick(self) -> None:
@@ -87,11 +95,18 @@ class NoteHistoryStrip(QWidget):
     def _tick(self, seconds: float) -> None:
         for row in self._rows:
             self._opacity[row] = min(1.0, self._opacity.get(row, 0.0) + seconds * _FADE_PER_SECOND)
+        still = []
+        for item in self._leaving:
+            item[1] = float(item[1]) - seconds * 1.8
+            item[2] = float(item[2]) + seconds * 28.0
+            if float(item[1]) > 0.02:
+                still.append(item)
+        self._leaving = still
         self._arm_timer()
         self.update()
 
     def _arm_timer(self) -> None:
-        pending = any(self._opacity.get(row, 1.0) < 0.99 for row in self._rows)
+        pending = bool(self._leaving) or any(self._opacity.get(row, 1.0) < 0.99 for row in self._rows)
         if pending and not self._timer.isActive():
             self._timer.start()
         elif not pending and self._timer.isActive():

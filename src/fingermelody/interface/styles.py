@@ -95,15 +95,23 @@ QLabel#sessionStatusLabel[phase="idle"] {
 QLabel#statusLabel[error="yes"], QLabel#audioStatus[error="yes"] {
     color: #ff8f9a;
 }
-QLabel#lastNoteLabel {
-    font-size: 18px;
-    font-weight: 600;
-    color: #f4f1ff;
+QWidget#stage {
+    background-color: #10131c;
+    border: 1px solid #2a3148;
+    border-radius: 22px;
 }
-QFrame#cameraPanel, QFrame#infoPanel {
-    background-color: #171a24;
-    border: 1px solid #2c3142;
+QFrame#cameraPanel {
+    background-color: #161925;
+    border: 1px solid #3a4560;
     border-radius: 16px;
+}
+QFrame#cameraPanel QPushButton {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+QFrame#infoPanel {
+    background: transparent;
+    border: none;
 }
 QLabel#preview {
     background-color: #0c0e14;
@@ -183,6 +191,26 @@ QPushButton#startSessionButton:disabled {
     background-color: #1a1d27;
     color: #7d8496;
     border-color: #2a2f3c;
+}
+QPushButton#freeModeButton:checked, QPushButton#guidedModeButton:checked {
+    background-color: #6d5ef5;
+    border-color: #8b7cf7;
+    color: #f8f7ff;
+    font-weight: 600;
+}
+QLabel#guideTitleLabel {
+    color: #f4f1ff;
+    font-size: 28px;
+    font-weight: 700;
+}
+QLabel#guideProgressLabel {
+    color: #3ee0d0;
+    font-size: 14px;
+    font-weight: 700;
+}
+QLabel#guideNextLabel, QLabel#lastNoteLabel {
+    color: #d5d8e4;
+    font-size: 13px;
 }
 QPushButton#stopButton:enabled {
     background-color: #3a2438;

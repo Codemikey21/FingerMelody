@@ -13,8 +13,8 @@ def test_preview_window_shows_camera_controls(qapp):
     assert window.windowTitle() == "FingerMelody"
     assert window.findChild(QLabel, "titleLabel").text() == "FingerMelody"
     assert window.findChild(QLabel, "deviceLabel").text() == "Dispositivo 0 · 640×480"
-    assert window.findChild(QPushButton, "startButton").text() == "Iniciar cámara"
-    assert window.findChild(QPushButton, "stopButton").text() == "Detener cámara"
+    assert window.findChild(QPushButton, "startButton").text() == "Iniciar"
+    assert window.findChild(QPushButton, "stopButton").text() == "Detener"
     assert window.findChild(QLabel, "statusLabel").text() == "Detenida"
     assert window.findChild(QLabel, "fpsLabel").text() == "FPS: —"
     assert window.findChild(QLabel, "trackingLabel").text() == "Reconocimiento inactivo"
@@ -116,6 +116,7 @@ def test_audio_panel_plays_notes_without_using_gestures(qapp):
 
     assert window._piano.note_names == ("C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5", "E5")
     assert window.findChild(QLabel, "audioStatus").text() == "Audio disponible"
+    window.select_free_mode()
     window.start_session()
     window._piano.play_key("C4")
     window._piano.play_key("E5")

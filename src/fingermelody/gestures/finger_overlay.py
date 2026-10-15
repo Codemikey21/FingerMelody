@@ -21,5 +21,7 @@ def draw_press_highlights(frame_bgr: np.ndarray, states) -> np.ndarray:
         if not (0 <= int(x) < width and 0 <= int(y) < height):
             continue
         color = _HIGHLIGHT.get(getattr(state, "hand", None), (220, 220, 220))
-        cv2.circle(canvas, (int(x), int(y)), 7, color, 2, cv2.LINE_AA)
+        center = (int(x), int(y))
+        cv2.circle(canvas, center, 13, color, 1, cv2.LINE_AA)
+        cv2.circle(canvas, center, 8, color, 2, cv2.LINE_AA)
     return canvas

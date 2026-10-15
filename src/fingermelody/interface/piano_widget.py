@@ -25,6 +25,7 @@ class PianoWidget(QWidget):
     """Teclado reconocible. Las teclas negras se dibujan y no suenan."""
 
     note_pressed = Signal(str)
+    lanes_changed = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -51,6 +52,10 @@ class PianoWidget(QWidget):
 
     def sizeHint(self) -> QSize:  # noqa: N802 - firma de Qt
         return QSize(900, 168)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - firma de Qt
+        super().resizeEvent(event)
+        self.lanes_changed.emit()
 
     @property
     def note_names(self) -> tuple[str, ...]:
@@ -179,12 +184,14 @@ class PianoWidget(QWidget):
         for name, rect in self.white_rects():
             level = self._level.get(name, 0.0)
             glow = self._glow.get(name, 0.0)
+            sink = 5.0 * level
+            key = rect.adjusted(0, sink * 0.45, 0, 0)
             if glow > 0.04:
                 halo = QColor(_GLOW)
                 halo.setAlpha(int(110 * glow))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(halo)
-                painter.drawRoundedRect(rect.adjusted(-3, -4, 3, 2), 12, 12)
+                painter.drawRoundedRect(key.adjusted(-3, -6, 3, 2), 12, 12)
             color = _mix(_REST, _ACTIVE, level)
             if name == self._held and level > 0.45:
                 color = _mix(color, _HELD, 0.45)
@@ -193,13 +200,13 @@ class PianoWidget(QWidget):
             edge = _mix(QColor("#c9c4d8"), QColor("#241c40"), level)
             painter.setPen(QPen(edge, 1))
             painter.setBrush(color)
-            painter.drawRoundedRect(rect, 8, 8)
+            painter.drawRoundedRect(key, 8, 8)
             painter.setPen(_mix(QColor("#1c2030"), QColor("#07141a"), level))
             font = QFont(self._font)
             font.setPointSize(8 if rect.width() < 48 else 10)
             painter.setFont(font)
             painter.drawText(
-                rect.adjusted(2, rect.height() * 0.62, -2, -6),
+                key.adjusted(2, key.height() * 0.62, -2, -6),
                 Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
                 name,
             )
