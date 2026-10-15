@@ -11,11 +11,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
 
+from fingermelody.audio.audio_engine import AudioEngine, AudioError
 from fingermelody.gestures.gesture_engine import GestureUpdate, format_gesture_column
+from fingermelody.music.note_mapper import NoteMapper
 from fingermelody.interface.camera_worker import CameraWorker
 from fingermelody.vision.camera_manager import CameraManager
 from fingermelody.vision.hand_tracker import HandViewState
@@ -75,6 +78,14 @@ QPushButton#stopButton:enabled {
     background-color: #5c3336;
     border: 1px solid #7d4a4e;
 }
+QPushButton[noteButton="true"] {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+QLabel#audioStatus {
+    color: #c8c8d0;
+    font-size: 12px;
+}
 """
 
 
@@ -86,6 +97,7 @@ class PreviewWindow(QMainWindow):
         device_index: int = 0,
         width: int = 640,
         height: int = 480,
+        audio_engine: AudioEngine | None = None,
     ) -> None:
         super().__init__()
         self._state = "idle"
@@ -99,10 +111,13 @@ class PreviewWindow(QMainWindow):
         self._worker.error_occurred.connect(self._on_error)
         self._worker.tracking_warning.connect(self._on_tracking_warning)
         self._warning_box: QMessageBox | None = None
+        self._audio = audio_engine if audio_engine is not None else AudioEngine()
+        self._mapper = NoteMapper()
+        self._audio_closed = False
 
         self.setWindowTitle("FingerMelody")
         self.setStyleSheet(_DARK_STYLESHEET)
-        self.resize(760, 900)
+        self.resize(820, 980)
         self._build_ui(device_index, width, height)
         self._update_buttons()
 
@@ -139,7 +154,10 @@ class PreviewWindow(QMainWindow):
         self._finish_stop()
 
     def shutdown(self) -> None:
-        """Detiene la captura antes de cerrar la ventana."""
+        """Detiene la captura y el audio antes de cerrar la ventana."""
+        if not self._audio_closed:
+            self._audio.shutdown()
+            self._audio_closed = True
         if self._closing and self._state == "idle" and not self._worker.isRunning():
             return
         self._closing = True
@@ -229,6 +247,38 @@ class PreviewWindow(QMainWindow):
         buttons.addWidget(self._stop_button)
         buttons.addStretch(1)
 
+        self._audio.initialize()
+        self._audio.set_volume(0.7)
+        self._audio_status = QLabel(self._audio.status_message)
+        self._audio_status.setObjectName("audioStatus")
+        self._note_buttons: list[QPushButton] = []
+        notes = QHBoxLayout()
+        for finger_id, note_name in self._mapper.assignments():
+            button = QPushButton(note_name)
+            button.setObjectName(f"note_{note_name}")
+            button.setProperty("noteButton", True)
+            button.setToolTip(f"{finger_id} → {note_name}")
+            button.clicked.connect(lambda _checked=False, name=note_name: self._play_test_note(name))
+            button.setEnabled(self._audio.available)
+            self._note_buttons.append(button)
+            notes.addWidget(button)
+
+        self._volume = QSlider(Qt.Orientation.Horizontal)
+        self._volume.setObjectName("volumeSlider")
+        self._volume.setRange(0, 100)
+        self._volume.setValue(70)
+        self._volume.valueChanged.connect(self._change_volume)
+        self._volume_label = QLabel("Volumen 70 %")
+        self._volume_label.setObjectName("volumeLabel")
+        self._stop_audio = QPushButton("Detener sonidos")
+        self._stop_audio.setObjectName("stopAudioButton")
+        self._stop_audio.clicked.connect(self._audio.stop_all)
+        self._stop_audio.setEnabled(self._audio.available)
+        volume_row = QHBoxLayout()
+        volume_row.addWidget(self._volume_label)
+        volume_row.addWidget(self._volume, stretch=1)
+        volume_row.addWidget(self._stop_audio)
+
         layout.addWidget(title)
         layout.addWidget(self._device_label)
         layout.addWidget(self._preview, stretch=1)
@@ -237,6 +287,9 @@ class PreviewWindow(QMainWindow):
         layout.addLayout(finger_panel)
         layout.addLayout(info)
         layout.addLayout(buttons)
+        layout.addWidget(self._audio_status)
+        layout.addLayout(notes)
+        layout.addLayout(volume_row)
 
     def _show_latest_frame(self) -> None:
         image, fps, sequence, hands, fingers = self._worker.latest()
@@ -332,6 +385,22 @@ class PreviewWindow(QMainWindow):
         box.setModal(False)
         box.show()
         self._warning_box = box
+
+    def _play_test_note(self, note_name: str) -> None:
+        try:
+            played = self._audio.play_note(note_name)
+        except AudioError as exc:
+            self._audio_status.setText(str(exc))
+            return
+        if not played:
+            self._audio_status.setText(self._audio.status_message)
+
+    def _change_volume(self, value: int) -> None:
+        self._volume_label.setText(f"Volumen {value} %")
+        try:
+            self._audio.set_volume(value / 100.0)
+        except AudioError as exc:
+            self._audio_status.setText(str(exc))
 
     def _set_status(self, text: str, *, error: bool = False) -> None:
         self._status_label.setText(text)

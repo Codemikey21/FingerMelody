@@ -81,3 +81,48 @@ def test_finger_panel_shows_rest_and_a_press_count(qapp):
     assert "Índice (LEFT_INDEX) — Pulsación · 1" in left
     assert "Meñique (RIGHT_PINKY) — Reposo · 0" in right
     window.close()
+
+
+def test_audio_panel_plays_notes_without_using_gestures(qapp):
+    class PanelAudio:
+        def __init__(self):
+            self.played = []
+            self.volume = None
+            self.stopped = 0
+            self.closed = 0
+            self.available = True
+            self.status_message = "Audio disponible"
+
+        def initialize(self):
+            return True
+
+        def set_volume(self, value):
+            self.volume = value
+
+        def play_note(self, name):
+            self.played.append(name)
+            return True
+
+        def stop_all(self):
+            self.stopped += 1
+
+        def shutdown(self):
+            self.closed += 1
+
+    audio = PanelAudio()
+    window = PreviewWindow(audio_engine=audio)
+    window.show()
+    qapp.processEvents()
+
+    names = [button.text() for button in window._note_buttons]
+    assert names == ["C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5", "E5"]
+    assert window.findChild(QLabel, "audioStatus").text() == "Audio disponible"
+    window.findChild(QPushButton, "note_C4").click()
+    window.findChild(QPushButton, "note_E5").click()
+    window.findChild(QPushButton, "stopAudioButton").click()
+
+    assert audio.played == ["C4", "E5"]
+    assert audio.volume == 0.7
+    assert audio.stopped == 1
+    window.close()
+    assert audio.closed == 1
