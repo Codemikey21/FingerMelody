@@ -1,4 +1,4 @@
-"""Ventana provisional para ver la cámara, sin piano ni reconocimiento."""
+"""Ventana provisional para ver la cámara y las manos detectadas."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from fingermelody.interface.camera_worker import CameraWorker
 from fingermelody.vision.camera_manager import CameraManager
+from fingermelody.vision.hand_tracker import HandViewState
 
 _DARK_STYLESHEET = """
 QMainWindow, QWidget {
@@ -87,10 +88,12 @@ class PreviewWindow(QMainWindow):
         self._worker.capture_started.connect(self._on_capture_started)
         self._worker.capture_stopped.connect(self._on_capture_stopped)
         self._worker.error_occurred.connect(self._on_error)
+        self._worker.tracking_warning.connect(self._on_tracking_warning)
+        self._warning_box: QMessageBox | None = None
 
         self.setWindowTitle("FingerMelody")
         self.setStyleSheet(_DARK_STYLESHEET)
-        self.resize(720, 640)
+        self.resize(720, 720)
         self._build_ui(device_index, width, height)
         self._update_buttons()
 
@@ -163,6 +166,26 @@ class PreviewWindow(QMainWindow):
             QSizePolicy.Policy.Expanding,
         )
 
+        self._tracking_label = QLabel("Reconocimiento inactivo")
+        self._tracking_label.setObjectName("trackingLabel")
+        self._hands_label = QLabel("Manos: —")
+        self._hands_label.setObjectName("handsLabel")
+        self._left_label = QLabel("Izquierda: —")
+        self._left_label.setObjectName("leftHandLabel")
+        self._right_label = QLabel("Derecha: —")
+        self._right_label.setObjectName("rightHandLabel")
+
+        tracking = QHBoxLayout()
+        tracking.addWidget(self._tracking_label)
+        tracking.addStretch(1)
+        tracking.addWidget(self._hands_label)
+
+        sides = QHBoxLayout()
+        sides.addWidget(self._left_label)
+        sides.addSpacing(16)
+        sides.addWidget(self._right_label)
+        sides.addStretch(1)
+
         self._status_label = QLabel("Detenida")
         self._status_label.setObjectName("statusLabel")
         self._fps_label = QLabel("FPS: —")
@@ -188,13 +211,16 @@ class PreviewWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(self._device_label)
         layout.addWidget(self._preview, stretch=1)
+        layout.addLayout(tracking)
+        layout.addLayout(sides)
         layout.addLayout(info)
         layout.addLayout(buttons)
 
     def _show_latest_frame(self) -> None:
-        image, fps, sequence = self._worker.latest()
+        image, fps, sequence, hands = self._worker.latest()
         if fps is not None:
             self._fps_label.setText(f"FPS: {fps:.1f}")
+        self._apply_hand_state(hands)
         if image is None or sequence == self._shown_sequence:
             return
 
@@ -234,10 +260,48 @@ class PreviewWindow(QMainWindow):
         self._timer.stop()
         self._state = "idle"
         self._update_buttons()
+        self._apply_hand_state(HandViewState())
         if self._closing or self._error_message is not None:
             return
         self._set_status("Detenida")
         self._fps_label.setText("FPS: —")
+
+    def _apply_hand_state(self, state: HandViewState) -> None:
+        self._tracking_label.setText(state.message)
+        if state.both_present:
+            self._tracking_label.setStyleSheet("color: #b7d4c4;")
+        elif state.message not in {
+            "Reconocimiento inactivo",
+            "No hay manos visibles",
+            "Reconocimiento activo",
+        }:
+            self._tracking_label.setStyleSheet("color: #ffb4a8;")
+        else:
+            self._tracking_label.setStyleSheet("color: #f2f2f2;")
+        if state.message == "Reconocimiento inactivo":
+            self._hands_label.setText("Manos: —")
+            self._left_label.setText("Izquierda: —")
+            self._right_label.setText("Derecha: —")
+            return
+        self._hands_label.setText(f"Manos: {state.hand_count}")
+        self._left_label.setText(
+            "Izquierda: detectada" if state.left_present else "Izquierda: ausente"
+        )
+        self._right_label.setText(
+            "Derecha: detectada" if state.right_present else "Derecha: ausente"
+        )
+
+    def _on_tracking_warning(self, message: str) -> None:
+        self._apply_hand_state(HandViewState(active=False, message=message))
+        if self._closing:
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("FingerMelody")
+        box.setText(message)
+        box.setModal(False)
+        box.show()
+        self._warning_box = box
 
     def _set_status(self, text: str, *, error: bool = False) -> None:
         self._status_label.setText(text)

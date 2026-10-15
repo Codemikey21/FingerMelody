@@ -44,6 +44,21 @@ class FakeManager:
         return self._frames.pop(0)
 
 
+class IdleTracker:
+    """Reconocedor vacío para no cargar el modelo en las pruebas de cámara."""
+
+    def open(self):
+        return None
+
+    def detect(self, frame):
+        from fingermelody.vision.hand_tracker import HandFrame
+
+        return HandFrame(hands=(), width=int(frame.shape[1]), height=int(frame.shape[0]))
+
+    def close(self):
+        return None
+
+
 def wait_for_spy(spy, qapp, timeout=3.0):
     deadline = time.monotonic() + timeout
     while spy.count() == 0 and time.monotonic() < deadline:
@@ -81,7 +96,7 @@ def test_unavailable_camera_emits_error_and_does_not_close(qapp):
 
 def test_repeated_read_failures_stop_and_release_the_camera(qapp):
     manager = FakeManager()
-    worker = CameraWorker(manager)
+    worker = CameraWorker(manager, tracker=IdleTracker())
     errors = QSignalSpy(worker.error_occurred)
 
     worker.start()

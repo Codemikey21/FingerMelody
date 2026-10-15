@@ -15,6 +15,14 @@ from fingermelody.vision.camera_manager import (
     CameraManager,
     FrameReadError,
 )
+from fingermelody.vision.hand_overlay import draw_hands, mirror_selfie_frame
+from fingermelody.vision.hand_tracker import (
+    DETECT_FAILED_MESSAGE,
+    HandTracker,
+    HandTrackerError,
+    HandViewState,
+    to_view_state,
+)
 
 LOST_CONNECTION_MESSAGE = (
     "Se perdió la conexión con la cámara. Comprueba el dispositivo o si otra "
@@ -42,31 +50,36 @@ def bgr_frame_to_qimage(frame: np.ndarray) -> QImage:
 
 
 class CameraWorker(QThread):
-    """Lee la cámara fuera del hilo de la interfaz."""
+    """Lee la cámara y reconoce manos fuera del hilo de la interfaz."""
 
     error_occurred = Signal(str)
+    tracking_warning = Signal(str)
     capture_started = Signal()
     capture_stopped = Signal()
 
-    def __init__(self, manager: CameraManager) -> None:
+    def __init__(self, manager: CameraManager, tracker: HandTracker | None = None) -> None:
         super().__init__()
         self._manager = manager
+        self._tracker = tracker
         self._mutex = QMutex()
         self._latest_image: QImage | None = None
         self._fps: float | None = None
         self._sequence = 0
+        self._hands = HandViewState()
         self._frame_times: deque[float] = deque()
+        self._tracking_fallback = HandViewState()
 
-    def latest(self) -> tuple[QImage | None, float | None, int]:
-        """Devuelve la última imagen, los FPS medidos y un contador de fotogramas."""
+    def latest(self) -> tuple[QImage | None, float | None, int, HandViewState]:
+        """Devuelve la última imagen, los FPS, la secuencia y el estado de las manos."""
         self._mutex.lock()
         try:
-            return self._latest_image, self._fps, self._sequence
+            return self._latest_image, self._fps, self._sequence, self._hands
         finally:
             self._mutex.unlock()
 
     def run(self) -> None:
         self._reset_snapshot()
+        tracker = None
         try:
             try:
                 self._manager.open()
@@ -77,14 +90,32 @@ class CameraWorker(QThread):
             if self.isInterruptionRequested():
                 return
 
+            tracker = self._open_tracker()
             self.capture_started.emit()
-            self._capture_loop()
+            self._capture_loop(tracker)
         finally:
+            if tracker is not None:
+                tracker.close()
             if self._manager.is_open:
                 self._manager.close()
             self.capture_stopped.emit()
 
-    def _capture_loop(self) -> None:
+    def _open_tracker(self):
+        tracker = (
+            self._tracker
+            if self._tracker is not None
+            else HandTracker(mirrored_input=True)
+        )
+        try:
+            tracker.open()
+        except HandTrackerError as exc:
+            self._tracking_fallback = HandViewState(active=False, message=str(exc))
+            self.tracking_warning.emit(str(exc))
+            tracker.close()
+            return None
+        return tracker
+
+    def _capture_loop(self, tracker) -> None:
         failures = 0
         while not self.isInterruptionRequested():
             started = time.perf_counter()
@@ -103,8 +134,12 @@ class CameraWorker(QThread):
 
             failures = 0
             try:
+                # Un solo volteo. El modelo y la ventana reciben esta copia.
+                # mirrored_input corrige Left/Right; los puntos no se vuelven a reflejar.
+                frame = mirror_selfie_frame(frame)
+                frame, view = self._recognize(frame, tracker)
                 image = bgr_frame_to_qimage(frame)
-            except (ValueError, cv2.error):
+            except (HandTrackerError, ValueError, cv2.error):
                 failures += 1
                 if failures >= MAX_CONSECUTIVE_READ_FAILURES:
                     self.error_occurred.emit(LOST_CONNECTION_MESSAGE)
@@ -113,10 +148,19 @@ class CameraWorker(QThread):
                 continue
 
             now = time.perf_counter()
-            self._publish(image, self._measure_fps(now))
+            self._publish(image, self._measure_fps(now), view)
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             if elapsed_ms < _MIN_LOOP_MS:
                 self.msleep(_MIN_LOOP_MS - elapsed_ms)
+
+    def _recognize(self, frame: np.ndarray, tracker):
+        if tracker is None:
+            return frame, self._tracking_fallback
+        try:
+            detected = tracker.detect(frame)
+        except HandTrackerError:
+            return frame, HandViewState(active=False, message=DETECT_FAILED_MESSAGE)
+        return draw_hands(frame, detected.hands), to_view_state(detected)
 
     def _measure_fps(self, now: float) -> float | None:
         self._frame_times.append(now)
@@ -130,11 +174,12 @@ class CameraWorker(QThread):
             return None
         return (len(self._frame_times) - 1) / span
 
-    def _publish(self, image: QImage, fps: float | None) -> None:
+    def _publish(self, image: QImage, fps: float | None, hands: HandViewState) -> None:
         self._mutex.lock()
         try:
             self._latest_image = image
             self._fps = fps
+            self._hands = hands
             self._sequence += 1
         finally:
             self._mutex.unlock()
@@ -145,6 +190,7 @@ class CameraWorker(QThread):
             self._latest_image = None
             self._fps = None
             self._sequence = 0
+            self._hands = HandViewState()
             self._frame_times.clear()
         finally:
             self._mutex.unlock()
