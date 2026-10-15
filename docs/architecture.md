@@ -93,7 +93,9 @@ El hilo de captura mide, con reloj monotónico, la lectura del fotograma, la inf
 
 ## Motor musical
 
-`music.notes` calcula las diez frecuencias con la afinación temperada y A4 a 440 Hz. `NoteMapper` asocia cada dedo a una de esas notas y se puede sustituir; `AudioEngine` no lo importa. El sintetizador crea las muestras una vez, en PCM de 16 bits y dos canales, y el mezclador solo las reproduce. La ventana es la única que une una pulsación con `play_note`.
+`music.notes` calcula las diez frecuencias con la afinación temperada y A4 a 440 Hz. `NoteMapper` asocia cada dedo a una de esas notas y se puede sustituir; `AudioEngine` no lo importa. El sintetizador crea las muestras una vez, en PCM de 16 bits y dos canales, y el mezclador solo las reproduce.
+
+`SessionController` es el modo libre. Recibe `MusicalEvent` (nota, origen gesto o clic, y dedo si viene de un gesto). No abre la cámara ni llama a `play_note`. La ventana solo reproduce cuando la sesión está interpretando y el controlador acepta el evento. En pausa no hay notas nuevas. Al iniciar y al reanudar, los dedos que siguen flexionados quedan fuera hasta que vuelven a una pose abierta. El historial guarda nota, dedo, origen y milisegundos desde el inicio de la sesión, sin contar el tiempo en pausa. El modo guiado no está en `available_modes()`: no hay botón ni canción mientras no se añada ahí.
 
 ## Interfaz
 
@@ -104,11 +106,11 @@ Los componentes viven en `src/fingermelody/interface/`.
 | `main_window.MainWindow` | Compone la pantalla, posee el hilo de cámara y el único motor de audio, y conecta las señales. |
 | `camera_panel` | Vídeo, dispositivo, color de cada mano y FPS. La proporción del fotograma se conserva al redimensionar. |
 | `piano_widget` | Diez teclas blancas, C4 a E5, y teclas negras de adorno entre los tonos. El clic emite la nota; no llama al mezclador. |
-| `info_panel` | Última nota, dedo, manos, contador, FPS y estado de la cámara y del sonido. |
+| `info_panel` | Modo, sesión, historial reciente, última nota, dedo, manos, contador, FPS y estado de la cámara y del sonido. |
 | `settings_dialog` | Asociación real dedo-nota, dispositivo y estado del audio. |
 | `styles` | Tema oscuro, aplicado una vez. |
 | `camera_worker` | Captura y reconocimiento fuera del hilo gráfico. |
 
 La imagen muestra landmarks, conexiones y un anillo breve en la punta cuando hay pulsación. Los nombres de los dedos están en el panel. Izquierda y derecha siguen la mano anatómica de la vista espejada.
 
-Controles: **Iniciar cámara**, **Detener cámara**, **Volumen**, **Silenciar audio**, **Detener sonidos**, **Reiniciar pulsaciones** y **Configuración**. El encabezado indica si la cámara está activa y el estado del reconocimiento.
+Controles de cámara y audio: **Iniciar cámara**, **Detener cámara**, **Volumen**, **Silenciar audio**, **Detener sonidos**, **Reiniciar pulsaciones** y **Configuración**. En el panel, el modo libre añade **Iniciar sesión**, **Pausar**, **Reanudar** y **Finalizar**. El encabezado indica si la cámara está activa y el estado del reconocimiento. Sin una sesión en interpretación, el piano no acepta clics.

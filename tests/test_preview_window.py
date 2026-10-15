@@ -116,6 +116,7 @@ def test_audio_panel_plays_notes_without_using_gestures(qapp):
 
     assert window._piano.note_names == ("C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5", "E5")
     assert window.findChild(QLabel, "audioStatus").text() == "Audio disponible"
+    window.start_session()
     window._piano.play_key("C4")
     window._piano.play_key("E5")
     window.findChild(QPushButton, "stopAudioButton").click()

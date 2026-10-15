@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from fingermelody.gestures.finger_detector import FINGER_SPECS, finger_id
 
@@ -26,6 +35,23 @@ class InfoPanel(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setMinimumWidth(300)
         self.setMaximumWidth(480)
+
+        self.mode = QLabel("Modo libre")
+        self.mode.setObjectName("modeLabel")
+        self.session = QLabel("Sesión sin iniciar")
+        self.session.setObjectName("sessionStatusLabel")
+        self.session.setProperty("phase", "idle")
+        self.start_session = QPushButton("Iniciar sesión")
+        self.start_session.setObjectName("startSessionButton")
+        self.pause_session = QPushButton("Pausar")
+        self.pause_session.setObjectName("pauseSessionButton")
+        self.resume_session = QPushButton("Reanudar")
+        self.resume_session.setObjectName("resumeSessionButton")
+        self.finish_session = QPushButton("Finalizar")
+        self.finish_session.setObjectName("finishSessionButton")
+        self.history = QLabel("Historial: —")
+        self.history.setObjectName("historyLabel")
+        self.history.setWordWrap(True)
 
         self.hands = QLabel("Manos: —")
         self.hands.setObjectName("handsLabel")
@@ -78,12 +104,30 @@ class InfoPanel(QFrame):
         sides.addWidget(self.right)
         sides.addStretch(1)
 
+        heading = QHBoxLayout()
+        heading.setContentsMargins(0, 0, 0, 0)
+        heading.setSpacing(8)
+        heading.addWidget(self.mode)
+        heading.addWidget(self.session, stretch=1)
+
+        actions = QGridLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setHorizontalSpacing(8)
+        actions.setVerticalSpacing(8)
+        actions.addWidget(self.start_session, 0, 0)
+        actions.addWidget(self.pause_session, 0, 1)
+        actions.addWidget(self.resume_session, 1, 0)
+        actions.addWidget(self.finish_session, 1, 1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
+        layout.addLayout(heading)
+        layout.addLayout(actions)
         layout.addWidget(self.last_note)
         layout.addWidget(self.last_finger)
         layout.addWidget(self.presses)
+        layout.addWidget(self.history)
         layout.addWidget(self.hands)
         layout.addLayout(sides)
         layout.addWidget(self.fps)

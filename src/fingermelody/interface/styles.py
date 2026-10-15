@@ -62,8 +62,24 @@ QLabel#rightLegend {
     font-weight: 600;
 }
 QLabel#statusLabel, QLabel#audioStatus, QLabel#lastNoteLabel, QLabel#lastFingerLabel,
-QLabel#pressCountLabel, QLabel#handsLabel, QLabel#leftHandLabel, QLabel#rightHandLabel {
+QLabel#pressCountLabel, QLabel#handsLabel, QLabel#leftHandLabel, QLabel#rightHandLabel,
+QLabel#sessionStatusLabel {
     font-size: 13px;
+}
+QLabel#modeLabel {
+    color: #c4b6ff;
+    font-size: 13px;
+    font-weight: 700;
+}
+QLabel#sessionStatusLabel[phase="playing"] {
+    color: #3ee0d0;
+}
+QLabel#sessionStatusLabel[phase="paused"] {
+    color: #ffb4c0;
+}
+QLabel#historyLabel {
+    color: #c5cad6;
+    font-size: 12px;
 }
 QLabel#statusLabel[error="yes"], QLabel#audioStatus[error="yes"] {
     color: #ff8f9a;
@@ -139,6 +155,20 @@ QPushButton#startButton:pressed {
     background-color: #5648d4;
 }
 QPushButton#startButton:disabled {
+    background-color: #1a1d27;
+    color: #7d8496;
+    border-color: #2a2f3c;
+}
+QPushButton#startSessionButton {
+    background-color: #6d5ef5;
+    border-color: #8b7cf7;
+    color: #f8f7ff;
+    font-weight: 600;
+}
+QPushButton#startSessionButton:hover {
+    background-color: #7d70f7;
+}
+QPushButton#startSessionButton:disabled {
     background-color: #1a1d27;
     color: #7d8496;
     border-color: #2a2f3c;

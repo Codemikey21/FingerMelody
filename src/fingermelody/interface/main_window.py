@@ -20,7 +20,12 @@ from PySide6.QtWidgets import (
 )
 
 from fingermelody.audio.audio_engine import AudioEngine, AudioError
-from fingermelody.gestures.gesture_engine import GestureUpdate, format_gesture_column
+from fingermelody.gestures.gesture_engine import (
+    PHASE_HELD,
+    PHASE_PRESSED,
+    GestureUpdate,
+    format_gesture_column,
+)
 from fingermelody.interface.camera_panel import CameraPanel
 from fingermelody.interface.camera_worker import CameraWorker
 from fingermelody.interface.info_panel import InfoPanel, finger_caption
@@ -28,6 +33,17 @@ from fingermelody.interface.piano_widget import PianoWidget
 from fingermelody.interface.settings_dialog import SettingsDialog
 from fingermelody.interface.styles import STYLESHEET, restyle
 from fingermelody.music.note_mapper import NoteMapper
+from fingermelody.music.session import (
+    ORIGIN_CLICK,
+    ORIGIN_GESTURE,
+    PHASE_IDLE,
+    PHASE_PAUSED,
+    PHASE_PLAYING,
+    HistoryEntry,
+    MusicalEvent,
+    SessionController,
+    available_modes,
+)
 from fingermelody.vision.camera_manager import CameraManager
 from fingermelody.vision.hand_tracker import (
     ACTIVE_TRACKING_MESSAGE,
@@ -58,8 +74,8 @@ class MainWindow(QMainWindow):
         self._current_image: QImage | None = None
         self._rescaling = False
         self._split_ready = False
-        self._session_presses = 0
         self._muted = False
+        self._session = SessionController()
         self._played_keys: set[tuple[str, int]] = set()
         self._played_order: deque[tuple[str, int]] = deque()
         self._diagnostics = False
@@ -191,6 +207,11 @@ class MainWindow(QMainWindow):
         self._preview.resized.connect(self._rescale_preview)
 
         self._info = InfoPanel()
+        self._info.mode.setText(available_modes()[0].title)
+        self._info.start_session.clicked.connect(self.start_session)
+        self._info.pause_session.clicked.connect(self.pause_session)
+        self._info.resume_session.clicked.connect(self.resume_session)
+        self._info.finish_session.clicked.connect(self.finish_session)
         self._hands_label = self._info.hands
         self._left_label = self._info.left
         self._right_label = self._info.right
@@ -374,6 +395,7 @@ class MainWindow(QMainWindow):
         right = tuple(state for state in update.states if state.hand == "Right")
         self._left_fingers.setText(format_gesture_column("MANO IZQUIERDA", left, active=update.active))
         self._right_fingers.setText(format_gesture_column("MANO DERECHA", right, active=update.active))
+        self._release_open_fingers(update)
         self._sync_piano(update)
 
     def _sync_piano(self, update: GestureUpdate) -> None:
@@ -400,12 +422,15 @@ class MainWindow(QMainWindow):
             note = self._mapper.note_name(event.finger_id)
             if not note:
                 continue
-            started = time.perf_counter()
-            self._play_note(note)
-            self._diag_play_ms = (time.perf_counter() - started) * 1000.0
             self._diag_dispatch_ms = dispatch_ms
+            accepted = self._perform(
+                MusicalEvent(note, ORIGIN_GESTURE, event.finger_id),
+                pulse=False,
+            )
+            if accepted is None:
+                self._diag_event = f"Evento {event.finger_id} → {note} (sin reproducción)"
+                continue
             self._diag_event = f"Evento {event.finger_id} → {note}"
-            self._remember(note, finger_caption(event.finger_id))
 
     def _accept_press(self, event) -> bool:
         key = (event.finger_id, int(event.timestamp_ms))
@@ -418,9 +443,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _play_clicked_note(self, note_name: str) -> None:
-        if self._play_note(note_name):
-            self._remember(note_name, "Teclado")
-        self._piano.pulse_click(note_name)
+        self._perform(MusicalEvent(note_name, ORIGIN_CLICK), pulse=True)
 
     def _play_note(self, note_name: str) -> bool:
         try:
@@ -449,11 +472,38 @@ class MainWindow(QMainWindow):
             self._audio_status.setProperty("error", "no")
             restyle(self._audio_status)
 
-    def _remember(self, note_name: str, finger_text: str) -> None:
-        self._session_presses += 1
-        self._press_count.setText(f"Pulsaciones: {self._session_presses}")
-        self._last_note.setText(f"Última nota: {note_name}")
-        self._last_finger.setText(f"Dedo: {finger_text}")
+    def _perform(self, event: MusicalEvent, *, pulse: bool) -> HistoryEntry | None:
+        accepted = self._session.submit(event)
+        if accepted is None:
+            return None
+        started = time.perf_counter()
+        self._play_note(accepted.note)
+        self._diag_play_ms = (time.perf_counter() - started) * 1000.0
+        self._show_performance(accepted)
+        if pulse:
+            self._piano.pulse_click(accepted.note)
+        return accepted
+
+    def _show_performance(self, entry: HistoryEntry) -> None:
+        self._press_count.setText(f"Pulsaciones: {self._session.press_count}")
+        self._last_note.setText(f"Última nota: {entry.note}")
+        if entry.finger_id:
+            self._last_finger.setText(f"Dedo: {finger_caption(entry.finger_id)}")
+        else:
+            self._last_finger.setText("Dedo: Teclado")
+        self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        entries = self._session.recent(4)
+        if not entries:
+            self._info.history.setText("Historial: —")
+            return
+        lines = ["Historial"]
+        for entry in entries:
+            origin = "gesto" if entry.origin == ORIGIN_GESTURE else "clic"
+            who = entry.finger_id or "teclado"
+            lines.append(f"{entry.note} · {origin} · {who} · {entry.elapsed_ms / 1000:.2f} s")
+        self._info.history.setText("\n".join(lines))
 
     def _change_volume(self, value: int) -> None:
         if self._muted:
@@ -491,11 +541,91 @@ class MainWindow(QMainWindow):
         self._audio.stop_all()
         self._piano.clear_clicks()
 
+    def start_session(self) -> None:
+        if self._session.phase != PHASE_IDLE:
+            return
+        self._handle_press_events(self._worker.take_events())
+        _image, _fps, _sequence, _hands, gestures, _timing = self._worker.latest()
+        if not self._session.start(self._held_finger_ids(gestures)):
+            return
+        self._last_note.setText("Última nota: —")
+        self._last_finger.setText("Dedo: —")
+        self._press_count.setText("Pulsaciones: 0")
+        self._refresh_history()
+        self._update_buttons()
+
+    def pause_session(self) -> None:
+        pending = self._worker.take_events()
+        if not self._session.pause():
+            self._handle_press_events(pending)
+            return
+        self._handle_press_events(pending)
+        self._stop_sounds()
+        self._update_buttons()
+
+    def resume_session(self) -> None:
+        if self._session.phase != PHASE_PAUSED:
+            return
+        self._handle_press_events(self._worker.take_events())
+        _image, _fps, _sequence, _hands, gestures, _timing = self._worker.latest()
+        if not self._session.resume(self._held_finger_ids(gestures)):
+            return
+        self._update_buttons()
+
+    def finish_session(self) -> None:
+        pending = self._worker.take_events()
+        if not self._session.finish():
+            self._handle_press_events(pending)
+            return
+        self._handle_press_events(pending)
+        self._stop_sounds()
+        self._update_buttons()
+
     def _reset_press_count(self) -> None:
-        self._session_presses = 0
+        self._session.reset_counters()
         self._press_count.setText("Pulsaciones: 0")
         self._piano.set_gesture_notes(set())
         self._worker.request_count_reset()
+
+    def _held_finger_ids(self, update: GestureUpdate) -> set[str]:
+        if not update.active:
+            return set()
+        return {
+            state.finger_id
+            for state in update.states
+            if state.phase in {PHASE_PRESSED, PHASE_HELD}
+        }
+
+    def _release_open_fingers(self, update: GestureUpdate) -> None:
+        if self._session.phase != PHASE_PLAYING or not update.active:
+            return
+        held = self._held_finger_ids(update)
+        for finger_id in tuple(self._session.suppressed):
+            if finger_id not in held:
+                self._session.release_finger(finger_id)
+
+    def _session_caption(self) -> tuple[str, str]:
+        phase = self._session.phase
+        if phase == PHASE_PLAYING:
+            return "Interpretando", PHASE_PLAYING
+        if phase == PHASE_PAUSED:
+            return "En pausa", PHASE_PAUSED
+        if self._session.finished:
+            return "Sesión finalizada", "finished"
+        return "Sesión sin iniciar", PHASE_IDLE
+
+    def _refresh_session_controls(self) -> None:
+        phase = self._session.phase
+        self._info.start_session.setEnabled(phase == PHASE_IDLE)
+        self._info.pause_session.setEnabled(phase == PHASE_PLAYING)
+        self._info.resume_session.setEnabled(phase == PHASE_PAUSED)
+        self._info.finish_session.setEnabled(phase != PHASE_IDLE)
+        self._piano.setEnabled(phase == PHASE_PLAYING)
+        caption, marker = self._session_caption()
+        self._info.session.setText(caption)
+        if self._info.session.property("phase") != marker:
+            self._info.session.setProperty("phase", marker)
+            restyle(self._info.session)
 
     def _open_settings(self) -> None:
         if self._muted and self._audio.available:
@@ -606,3 +736,4 @@ class MainWindow(QMainWindow):
         self._start_button.setEnabled(self._state == "idle" and not running)
         self._stop_button.setEnabled(running or self._state in {"starting", "live", "stopping"})
         self._sync_camera_chip()
+        self._refresh_session_controls()
