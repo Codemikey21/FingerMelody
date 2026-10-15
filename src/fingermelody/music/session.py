@@ -57,7 +57,6 @@ def available_modes() -> tuple[PlayMode, ...]:
     """Modos con comportamiento real. El guiado no usa SessionController."""
     return (
         PlayMode(FREE_PLAY, "Modo libre"),
-        PlayMode(GUIDED_PLAY, "Jingle Bells"),
     )
 
 

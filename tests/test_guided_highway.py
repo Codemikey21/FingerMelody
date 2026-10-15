@@ -97,7 +97,7 @@ def test_guided_song_advances_only_on_the_expected_note():
     guide = GuidedMode(song)
     assert guide.current_note() == "E4"
     assert guide.upcoming_note() == "E4"
-    assert jingle_bells()[0].note == "E4"
+    assert jingle_bells()[0].notes == ("E5", "C4")
 
     assert guide.submit("E4") is None
     assert guide.start() is True
@@ -121,53 +121,16 @@ def test_guided_song_advances_only_on_the_expected_note():
     assert guide.submit("C4") is None
 
 
-def test_guided_window_plays_once_and_free_mode_still_works(qapp):
-    audio = PanelAudio()
-    window = PreviewWindow(audio_engine=audio)
-    window.resize(1100, 760)
-    window.show()
-    qapp.processEvents()
-    window.select_guided_mode()
-    qapp.processEvents()
-
-    assert window.findChild(QLabel, "guideTitleLabel").text() == "Jingle Bells"
-    assert window._highway.isVisible()
-    assert window._highway.lane_center("E4") == pytest.approx(_mapped_center(window, "E4"), abs=1.5)
-    wide = window._highway.lane_center("C4")
-    window.resize(1400, 820)
-    qapp.processEvents()
-    window._sync_highway_lanes()
-    assert window._highway.lane_center("C4") != pytest.approx(wide)
-    assert window._highway.lane_center("C4") == pytest.approx(_mapped_center(window, "C4"), abs=1.5)
-
-    window.start_session()
-    window._piano.play_key("C4")
-    assert audio.played == []
-    assert window._guide.index == 0
-    window._handle_press_events((FingerPressEvent("LEFT_MIDDLE", 9),))
-    window._handle_press_events((FingerPressEvent("LEFT_MIDDLE", 9),))
-    assert audio.played == ["E4"]
-    assert window._guide.index == 1
-    assert window._highway.particle_count() >= 6
-    assert window.findChild(QLabel, "guideProgressLabel").text().startswith("1 /")
-
-    window.pause_session()
-    window._piano.play_key("E4")
-    assert audio.played == ["E4"]
-    assert audio.stopped == 1
-    window.resume_session()
-    window.select_free_mode()
-    window.start_session()
-    window._piano.play_key("C4")
-    assert audio.played[-1] == "C4"
-    assert window.findChild(QLabel, "modeLabel").text() == "Modo libre"
-    window.close()
-    qapp.processEvents()
-    window.deleteLater()
-    qapp.processEvents()
-
-
-def _mapped_center(window, note: str) -> float:
-    rect = next(item for name, item in window._piano.white_rects() if name == note)
-    center = window._piano.mapToGlobal(rect.center().toPoint())
-    return float(window._highway.mapFromGlobal(center).x())
+def test_isolated_guide_can_still_feed_the_legacy_highway(qapp):
+    guide = GuidedMode((SongNote("E4", 1), SongNote("G4", 1)))
+    road = _highway()
+    road.set_chart(guide.chart(), guide.index)
+    guide.start()
+    road.set_running(True)
+    hit = guide.submit("E4")
+    assert hit is not None
+    road.notify_hit(hit.note)
+    road.set_chart(guide.chart(), guide.index)
+    assert road.current_note() == "G4"
+    assert road.effect_count() > 0
+    road.shutdown()

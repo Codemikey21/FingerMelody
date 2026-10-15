@@ -259,7 +259,6 @@ def test_gesture_note_reaches_audio_once(qapp):
 
     audio = PanelAudio()
     window = PreviewWindow(audio_engine=audio)
-    window.select_free_mode()
     window.start_session()
     event = FingerPressEvent("LEFT_THUMB", 15)
     window._handle_press_events((event,))

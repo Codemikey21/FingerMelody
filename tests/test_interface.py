@@ -84,7 +84,6 @@ def test_click_plays_once_and_gesture_light_does_not_play_again(qapp):
     qapp.processEvents()
     note = window._piano.white_rects()[0][1].center().toPoint()
 
-    window.select_free_mode()
     window.start_session()
     QTest.mouseClick(window._piano, Qt.MouseButton.LeftButton, pos=note)
     window._apply_gestures(_lit_thumb())
@@ -103,7 +102,6 @@ def test_click_plays_once_and_gesture_light_does_not_play_again(qapp):
 def test_volume_mute_and_press_reset(qapp):
     audio = PanelAudio()
     window = PreviewWindow(audio_engine=audio)
-    window.select_free_mode()
     window._volume.setValue(40)
     window.findChild(QPushButton, "muteButton").click()
     window._volume.setValue(55)

@@ -5,8 +5,10 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QRadialGradient, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
+
+from fingermelody.interface.neon_palette import BACKGROUND, alpha, note_color
 
 WHITE_NOTES = ("C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5", "E5")
 # Tecla negra entre dos blancas cuando el intervalo es de un tono.
@@ -16,9 +18,6 @@ _FADE_PER_SECOND = 2.5
 _GLOW_PER_SECOND = 3.4
 _TICK_MS = 32
 _REST = QColor("#ebe7f6")
-_ACTIVE = QColor("#3ee0d0")
-_HELD = QColor("#6d5ef5")
-_GLOW = QColor("#8b7cf7")
 
 
 class PianoWidget(QWidget):
@@ -30,6 +29,9 @@ class PianoWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("piano")
+        self._integrated = False
+        self._ambient_notes = {}
+        self._impact_lights = {}
         self.setMinimumHeight(150)
         self.setMaximumHeight(190)
         self.setMinimumWidth(520)
@@ -66,6 +68,16 @@ class PianoWidget(QWidget):
 
     def glow(self, note: str) -> float:
         return self._glow.get(note, 0.0)
+
+    def set_impact_lights(self, lighting: dict[str, float]) -> None:
+        self._impact_lights = dict(lighting)
+        self.update()
+
+    def set_ambient_notes(self, lighting: dict[str, float]) -> None:
+        """Reflejo de proximidad visual; no activa teclas ni emite notas."""
+        if lighting != self._ambient_notes:
+            self._ambient_notes = dict(lighting)
+            self.update()
 
     def set_captions(self, captions: dict[str, str]) -> None:
         self._captions = dict(captions)
@@ -114,7 +126,7 @@ class PianoWidget(QWidget):
         self.note_pressed.emit(note)
 
     def white_rects(self) -> list[tuple[str, QRectF]]:
-        area = self.rect().adjusted(12, 12, -12, -12)
+        area = QRectF(self.rect()) if self._integrated else QRectF(self.rect().adjusted(12, 12, -12, -12))
         count = len(WHITE_NOTES)
         gap = 4.0
         width = max(1.0, (area.width() - gap * (count - 1)) / count)
@@ -124,6 +136,11 @@ class PianoWidget(QWidget):
             rects.append((name, QRectF(x, float(area.top()), width, float(area.height()))))
             x += width + gap
         return rects
+
+    def set_integrated(self, integrated: bool) -> None:
+        self._integrated = integrated
+        self.lanes_changed.emit()
+        self.update()
 
     def black_rects(self) -> list[QRectF]:
         whites = self.white_rects()
@@ -177,9 +194,12 @@ class PianoWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - firma de Qt
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(QPen(QColor("#2c3142"), 1))
-        painter.setBrush(QColor("#141722"))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 16, 16)
+        if self._integrated:
+            painter.fillRect(self.rect(), QColor(BACKGROUND))
+        else:
+            painter.setPen(QPen(QColor("#2c3142"), 1))
+            painter.setBrush(QColor("#141722"))
+            painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 16, 16)
 
         for name, rect in self.white_rects():
             level = self._level.get(name, 0.0)
@@ -187,20 +207,30 @@ class PianoWidget(QWidget):
             sink = 5.0 * level
             key = rect.adjusted(0, sink * 0.45, 0, 0)
             if glow > 0.04:
-                halo = QColor(_GLOW)
+                halo = note_color(name)
                 halo.setAlpha(int(110 * glow))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(halo)
                 painter.drawRoundedRect(key.adjusted(-3, -6, 3, 2), 12, 12)
-            color = _mix(_REST, _ACTIVE, level)
+            color = _mix(_REST, note_color(name), level)
             if name == self._held and level > 0.45:
-                color = _mix(color, _HELD, 0.45)
+                color = _mix(color, note_color(name).darker(120), 0.45)
             elif name == self._hover and level < 0.12:
                 color = QColor("#f7f4ff")
             edge = _mix(QColor("#c9c4d8"), QColor("#241c40"), level)
             painter.setPen(QPen(edge, 1))
-            painter.setBrush(color)
-            painter.drawRoundedRect(key, 8, 8)
+            if self._integrated:
+                surface = QLinearGradient(key.topLeft(), key.bottomRight())
+                surface.setColorAt(0, _mix(QColor("#8b96ae"), note_color(name), level))
+                surface.setColorAt(0.16, _mix(QColor("#d0d5df"), note_color(name), level))
+                surface.setColorAt(0.8, _mix(QColor("#959eaf"), note_color(name), level))
+                surface.setColorAt(1, _mix(QColor("#606b81"), note_color(name), level))
+                if name == self._hover and level < 0.12:
+                    surface.setColorAt(0.5, QColor("#ecf3ff"))
+                painter.setBrush(surface)
+            else:
+                painter.setBrush(color)
+            painter.drawRoundedRect(key, 4 if self._integrated else 8, 4 if self._integrated else 8)
             painter.setPen(_mix(QColor("#1c2030"), QColor("#07141a"), level))
             font = QFont(self._font)
             font.setPointSize(8 if rect.width() < 48 else 10)
@@ -214,7 +244,47 @@ class PianoWidget(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#1b1c24"))
         for rect in self.black_rects():
-            painter.drawRoundedRect(rect, 5, 5)
+            if self._integrated:
+                shadow = rect.translated(4, 6)
+                painter.setBrush(QColor(0, 0, 0, 75))
+                painter.drawRoundedRect(shadow, 3, 3)
+                surface = QLinearGradient(rect.topLeft(), rect.bottomRight())
+                surface.setColorAt(0, QColor("#3b4356"))
+                surface.setColorAt(0.25, QColor("#151a26"))
+                surface.setColorAt(0.85, QColor("#060810"))
+                surface.setColorAt(1, QColor("#303a4e"))
+                painter.setBrush(surface)
+            painter.drawRoundedRect(rect, 3, 3)
+        if self._integrated:
+            painter.setPen(Qt.PenStyle.NoPen)
+            for name, rect in self.white_rects():
+                strength = self._ambient_notes.get(name, 0.0)
+                reflection = QLinearGradient(0, rect.top(), 0, rect.top() + rect.height() * 0.58)
+                color = note_color(name)
+                reflection.setColorAt(0, alpha(color, int(75 + 145 * strength)))
+                reflection.setColorAt(0.18, alpha(color, int(35 + 100 * strength)))
+                reflection.setColorAt(1, alpha(color, 0))
+                painter.fillRect(rect, reflection)
+                power = self._impact_lights.get(name, 0.0)
+                if power > 0:
+                    painter.save()
+                    painter.setClipRect(rect)
+                    painter.translate(rect.center().x(), rect.top())
+                    painter.scale(rect.width() * 0.48, rect.height() * 0.85)
+                    liquid = QRadialGradient(0, 0, 1)
+                    liquid.setColorAt(0, alpha(QColor("#ffffff"), round(255 * power)))
+                    liquid.setColorAt(0.14, alpha(color.lighter(160), round(230 * power)))
+                    liquid.setColorAt(0.5, alpha(color, round(170 * power)))
+                    liquid.setColorAt(1, alpha(color, 0))
+                    painter.setBrush(liquid)
+                    painter.drawEllipse(QRectF(-1, -1, 2, 2))
+                    painter.restore()
+                    for offset, length in ((-0.17, 28), (0.07, 48), (0.22, 19)):
+                        drip = QLinearGradient(0, rect.top(), 0, rect.top() + length)
+                        drip.setColorAt(0, alpha(QColor("#eaffff"), round(230 * power)))
+                        drip.setColorAt(1, alpha(color, 0))
+                        painter.setBrush(drip)
+                        painter.drawRoundedRect(QRectF(rect.center().x() + rect.width() * offset, rect.top(), 4, length), 2, 2)
         painter.end()
 
     def _on_tick(self) -> None:

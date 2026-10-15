@@ -28,7 +28,14 @@ Permitir interpretar melodías mediante el movimiento de los dedos, sin un instr
 
 ## Estado del desarrollo
 
-La ventana es la experiencia de Jingle Bells: las notas bajan hasta el piano, la cámara queda en una tarjeta pequeña y el piano ocupa el ancho de la escena. Flexionar el dedo de la nota indicada la reproduce e ilumina la tecla. El piano también suena al pulsar esa tecla con el ratón. La canción avanza solo cuando se toca la nota que espera.
+FingerMelody abre como piano virtual libre, con la sesión en espera. Pulsa
+**Iniciar sesión** para interpretar cualquiera de las diez notas mediante gestos
+o clics. No se carga ninguna canción ni se muestran barras programadas.
+
+Se conservan el escenario neón, la cámara flotante, el piano iluminado y el
+historial. Los impactos líquidos y columnas reactivas del modo libre todavía
+no están conectados; se mantienen internamente para el siguiente bloque.
+El controlador guiado permanece aislado, sin acceso desde la interfaz pública.
 
 ## Entorno de desarrollo
 
@@ -68,7 +75,12 @@ Se abre la ventana de FingerMelody. La cámara no arranca hasta que se pulsa **I
 
 La imagen se muestra en espejo, como una cámara frontal. OpenCV entrega el fotograma sin voltear; la aplicación lo voltea una sola vez y usa esa copia para reconocer y para dibujar. El Hand Landmarker de MediaPipe Tasks nombra la mano en una imagen sin espejo, así que sobre esta vista la etiqueta se corrige una vez: la mano izquierda aparece como Izquierda y la derecha como Derecha. La etiqueta es anatómica, no el lado de la pantalla. Si la confianza es baja, esa mano no recibe etiqueta.
 
-Pulsa **Iniciar sesión**. Las notas de Jingle Bells bajan hasta la línea y esperan. Toca la nota que se muestra, con el dedo o con el piano: la tecla se ilumina, salen partículas y entra la siguiente. El badge pasa a **Activa**. **Pausar** lo deja en **Pausada** y corta las notas nuevas; la cámara puede seguir. **Reanudar** no repite un dedo que ya estaba flexionado: hay que abrirlo y flexionarlo otra vez. **Finalizar** marca **Finalizada**. Las cápsulas del historial entran y se retiran con un fundido.
+Pulsa **Iniciar sesión** y toca libremente con los dedos o el piano. Cada
+pulsación aceptada reproduce su nota e ilumina la tecla; las notas de ambas manos
+pueden sonar juntas. **Pausar** bloquea nuevas notas y detiene los sonidos, pero
+la cámara puede seguir. **Reanudar** exige abrir y volver a flexionar los dedos
+que seguían doblados. **Finalizar** termina la sesión. El historial muestra las
+últimas notas, su origen y el dedo en la descripción emergente.
 
 Coloca una o las dos manos frente a la cámara, con la palma visible y los dedos extendidos. Con las dos, el indicador debe decir **Ambas manos presentes** y el panel pasa de **Seguimiento perdido** a **Reposo** en los diez dedos. Con la sesión en marcha, dobla un dedo y mantenlo: debe pasar a **Pulsación**, el contador sube una vez y un aro marca la punta; si lo sigues doblando, queda en **Flexionado** sin sumar otra pulsación. Ábrelo y dóblalo otra vez para sumar la siguiente. Mover la mano abierta, sin doblar dedos, no debe aumentar el contador.
 
