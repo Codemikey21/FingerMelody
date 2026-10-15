@@ -28,7 +28,7 @@ Permitir interpretar melodías mediante el movimiento de los dedos, sin un instr
 
 ## Estado del desarrollo
 
-Entorno de desarrollo preparado sobre Python 3.11. La aplicación todavía no implementa la visión, los gestos, el audio ni la interfaz.
+La ventana provisional abre la cámara, muestra el vídeo en directo y los FPS medidos. Todavía no hay reconocimiento de manos, gestos, piano ni sonido.
 
 ## Entorno de desarrollo
 
@@ -58,7 +58,22 @@ En una terminal del proyecto, con el entorno activado:
 python -m fingermelody.main
 ```
 
-El programa escribe `FingerMelody está correctamente configurado.` No abre la cámara ni crea una ventana.
+Se abre la ventana de FingerMelody. La cámara no arranca hasta que se pulsa **Iniciar cámara**.
+
+### Cámara
+
+1. Pulsa **Iniciar cámara** para ver el vídeo y los FPS medidos.
+2. Pulsa **Detener cámara** para liberar el dispositivo.
+3. Cerrar la ventana también detiene la captura.
+
+La cámara principal es el índice 0 y la resolución inicial es 640×480. Para usar otro dispositivo o pedir otra resolución:
+
+```powershell
+python -m fingermelody.main --camera 1
+python -m fingermelody.main --width 320 --height 240
+```
+
+Si el controlador no admite el tamaño pedido, entrega la resolución más cercana. Los FPS que muestra la ventana se calculan con los fotogramas recibidos.
 
 ### Pruebas
 
@@ -66,9 +81,15 @@ El programa escribe `FingerMelody está correctamente configurado.` No abre la c
 python -m pytest
 ```
 
+`pytest` no abre la cámara: el dispositivo se simula. Para comprobar el vídeo real, ejecuta la aplicación y pulsa **Iniciar cámara**.
+
 ### Problemas habituales
 
 - Si `python` no es 3.11, vuelve a crear el entorno con `py -3.11 -m venv .venv`.
 - Si PowerShell bloquea `Activate.ps1`, ejecuta `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` y activa el entorno de nuevo. También puedes llamar a `.venv\Scripts\python.exe` sin activarlo.
 - No instales `opencv-python` ni `opencv-python-headless` junto a `opencv-contrib-python`. Esas distribuciones publican el mismo módulo `cv2`.
 - No uses paquetes instalados en el Python global. El entorno virtual no los incluye.
+- En Windows, permite el acceso a la cámara a las aplicaciones de escritorio en Configuración, Privacidad y seguridad, Cámara.
+- Si la cámara está abierta en otra aplicación, ciérrala antes de iniciar la captura.
+- Si el índice 0 no es la cámara del portátil, prueba `--camera 1`.
+- En Windows se intenta primero DirectShow. Si ese backend no entrega imagen, la aplicación prueba el backend predeterminado.
