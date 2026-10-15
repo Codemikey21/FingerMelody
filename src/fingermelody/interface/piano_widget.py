@@ -11,7 +11,14 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 WHITE_NOTES = ("C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5", "D5", "E5")
 # Tecla negra entre dos blancas cuando el intervalo es de un tono.
 _BLACK_AFTER = frozenset({0, 1, 3, 4, 5, 7, 8})
-_CLICK_SECONDS = 0.22
+_PULSE_HOLD = 0.16
+_FADE_PER_SECOND = 2.5
+_GLOW_PER_SECOND = 3.4
+_TICK_MS = 32
+_REST = QColor("#ebe7f6")
+_ACTIVE = QColor("#3ee0d0")
+_HELD = QColor("#6d5ef5")
+_GLOW = QColor("#8b7cf7")
 
 
 class PianoWidget(QWidget):
@@ -30,14 +37,17 @@ class PianoWidget(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._gesture: set[str] = set()
         self._clicks: dict[str, float] = {}
+        self._level: dict[str, float] = {}
+        self._glow: dict[str, float] = {}
         self._captions: dict[str, str] = {}
         self._hover: str | None = None
         self._held: str | None = None
         self._font = QFont("Segoe UI", 10)
         self._font.setBold(True)
+        self._last_tick = time.monotonic()
         self._timer = QTimer(self)
-        self._timer.setInterval(40)
-        self._timer.timeout.connect(self._expire_clicks)
+        self._timer.setInterval(_TICK_MS)
+        self._timer.timeout.connect(self._on_tick)
 
     def sizeHint(self) -> QSize:  # noqa: N802 - firma de Qt
         return QSize(900, 168)
@@ -45,6 +55,12 @@ class PianoWidget(QWidget):
     @property
     def note_names(self) -> tuple[str, ...]:
         return WHITE_NOTES
+
+    def level(self, note: str) -> float:
+        return self._level.get(note, 0.0)
+
+    def glow(self, note: str) -> float:
+        return self._glow.get(note, 0.0)
 
     def set_captions(self, captions: dict[str, str]) -> None:
         self._captions = dict(captions)
@@ -54,28 +70,37 @@ class PianoWidget(QWidget):
         cleaned = {note for note in notes if note in WHITE_NOTES}
         if cleaned == self._gesture:
             return
+        for note in cleaned - self._gesture:
+            self._level[note] = 1.0
         self._gesture = cleaned
+        self._arm_timer()
         self.update()
 
     def pulse_click(self, note: str) -> None:
-        """Mantiene la tecla iluminada un instante después del clic."""
+        """Enciende la tecla y deja que el brillo se apague con un desvanecimiento."""
         if note not in WHITE_NOTES:
             return
-        self._clicks[note] = time.monotonic() + _CLICK_SECONDS
-        if not self._timer.isActive():
-            self._timer.start()
+        self._clicks[note] = _PULSE_HOLD
+        self._level[note] = 1.0
+        self._glow[note] = 1.0
+        self._arm_timer()
         self.update()
 
     def clear_clicks(self) -> None:
+        """Suelta los clics. La tecla vuelve al reposo por el mismo desvanecimiento."""
         if not self._clicks:
             return
         self._clicks.clear()
-        self._timer.stop()
+        self._arm_timer()
         self.update()
 
+    def advance(self, seconds: float) -> None:
+        """Avanza el desvanecimiento. El temporizador usa el mismo paso."""
+        self._tick(max(0.0, seconds))
+
     def lit_notes(self) -> set[str]:
-        alive = {note for note, until in self._clicks.items() if until > time.monotonic()}
-        return set(self._gesture) | alive
+        bright = {note for note, level in self._level.items() if level >= 0.2}
+        return set(self._gesture) | set(self._clicks) | bright
 
     def play_key(self, note: str) -> None:
         """Mismo camino que un clic sobre la tecla blanca."""
@@ -151,19 +176,25 @@ class PianoWidget(QWidget):
         painter.setBrush(QColor("#141722"))
         painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 16, 16)
 
-        now = time.monotonic()
         for name, rect in self.white_rects():
-            lit = name in self._gesture or self._clicks.get(name, 0) > now
-            if lit:
-                color = QColor("#6d5ef5") if name == self._held else QColor("#3ee0d0")
-            elif name == self._hover:
+            level = self._level.get(name, 0.0)
+            glow = self._glow.get(name, 0.0)
+            if glow > 0.04:
+                halo = QColor(_GLOW)
+                halo.setAlpha(int(110 * glow))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(halo)
+                painter.drawRoundedRect(rect.adjusted(-3, -4, 3, 2), 12, 12)
+            color = _mix(_REST, _ACTIVE, level)
+            if name == self._held and level > 0.45:
+                color = _mix(color, _HELD, 0.45)
+            elif name == self._hover and level < 0.12:
                 color = QColor("#f7f4ff")
-            else:
-                color = QColor("#ebe7f6")
-            painter.setPen(QPen(QColor("#241c40") if lit else QColor("#c9c4d8"), 1))
+            edge = _mix(QColor("#c9c4d8"), QColor("#241c40"), level)
+            painter.setPen(QPen(edge, 1))
             painter.setBrush(color)
             painter.drawRoundedRect(rect, 8, 8)
-            painter.setPen(QColor("#07141a") if lit else QColor("#1c2030"))
+            painter.setPen(_mix(QColor("#1c2030"), QColor("#07141a"), level))
             font = QFont(self._font)
             font.setPointSize(8 if rect.width() < 48 else 10)
             painter.setFont(font)
@@ -179,13 +210,67 @@ class PianoWidget(QWidget):
             painter.drawRoundedRect(rect, 5, 5)
         painter.end()
 
-    def _expire_clicks(self) -> None:
+    def _on_tick(self) -> None:
         now = time.monotonic()
-        expired = [note for note, until in self._clicks.items() if until <= now]
-        if not expired:
-            return
-        for note in expired:
-            del self._clicks[note]
-        if not self._clicks:
-            self._timer.stop()
+        self._tick(min(0.05, max(0.0, now - self._last_tick)))
+        self._last_tick = now
+
+    def _tick(self, dt: float) -> None:
+        overflow: dict[str, float] = {}
+        for note in list(self._clicks):
+            self._clicks[note] -= dt
+            if self._clicks[note] <= 0.0:
+                overflow[note] = -self._clicks[note]
+                del self._clicks[note]
+        notes = set(self._level) | set(self._glow) | set(self._gesture) | set(self._clicks) | set(overflow)
+        for note in notes:
+            if note not in _WHITE:
+                continue
+            if note in self._gesture or note in self._clicks:
+                level = 1.0
+                glow = 1.0 if note in self._clicks else max(0.0, self._glow.get(note, 0.0) - dt * _GLOW_PER_SECOND)
+            else:
+                step = overflow.get(note, dt)
+                level = max(0.0, self._level.get(note, 0.0) - step * _FADE_PER_SECOND)
+                glow = max(0.0, self._glow.get(note, 0.0) - step * _GLOW_PER_SECOND)
+            if level <= 0.001:
+                self._level.pop(note, None)
+            else:
+                self._level[note] = level
+            if glow <= 0.001:
+                self._glow.pop(note, None)
+            else:
+                self._glow[note] = glow
+        self._arm_timer()
         self.update()
+
+    def _busy(self) -> bool:
+        if self._clicks:
+            return True
+        if any(glow > 0.01 for glow in self._glow.values()):
+            return True
+        for note, level in self._level.items():
+            if note not in self._gesture and level > 0.01:
+                return True
+        return any(self._level.get(note, 0.0) < 0.99 for note in self._gesture)
+
+    def _arm_timer(self) -> None:
+        if self._busy():
+            if not self._timer.isActive():
+                self._last_tick = time.monotonic()
+                self._timer.start()
+            return
+        if self._timer.isActive():
+            self._timer.stop()
+
+
+_WHITE = frozenset(WHITE_NOTES)
+
+
+def _mix(start: QColor, end: QColor, amount: float) -> QColor:
+    blend = max(0.0, min(1.0, amount))
+    return QColor(
+        int(start.red() + (end.red() - start.red()) * blend),
+        int(start.green() + (end.green() - start.green()) * blend),
+        int(start.blue() + (end.blue() - start.blue()) * blend),
+    )

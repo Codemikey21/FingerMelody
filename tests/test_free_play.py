@@ -6,6 +6,8 @@ from PySide6.QtWidgets import QLabel, QPushButton
 
 from fingermelody.gestures.gesture_engine import FingerGestureState, FingerPressEvent, GestureUpdate
 from fingermelody.interface.camera_worker import FrameTiming
+from fingermelody.interface.history_strip import NoteHistoryStrip
+from fingermelody.interface.piano_widget import PianoWidget
 from fingermelody.interface.preview_window import PreviewWindow
 from fingermelody.music.session import (
     FREE_PLAY,
@@ -205,7 +207,8 @@ def test_free_play_window_blocks_pause_and_skips_a_held_finger_on_resume(qapp):
     assert audio.played == []
 
     buttons["startSessionButton"].click()
-    assert window.findChild(QLabel, "sessionStatusLabel").text() == "Interpretando"
+    assert window.findChild(QLabel, "sessionStatusLabel").text() == "Activa"
+    assert window.findChild(QLabel, "sessionStatusLabel").property("phase") == "playing"
     window._handle_press_events((
         FingerPressEvent("LEFT_THUMB", 1),
         FingerPressEvent("RIGHT_THUMB", 1),
@@ -214,7 +217,7 @@ def test_free_play_window_blocks_pause_and_skips_a_held_finger_on_resume(qapp):
     window._piano.play_key("E4")
 
     assert audio.played == ["C4", "A4", "E4"]
-    history = window.findChild(QLabel, "historyLabel").text()
+    history = window._info.history.caption()
     assert "C4 · gesto · LEFT_THUMB" in history
     assert "A4 · gesto · RIGHT_THUMB" in history
     assert "E4 · clic · teclado" in history
@@ -222,7 +225,7 @@ def test_free_play_window_blocks_pause_and_skips_a_held_finger_on_resume(qapp):
     assert window.findChild(QLabel, "lastNoteLabel").text() == "Última nota: E4"
 
     buttons["pauseSessionButton"].click()
-    assert window.findChild(QLabel, "sessionStatusLabel").text() == "En pausa"
+    assert window.findChild(QLabel, "sessionStatusLabel").text() == "Pausada"
     assert audio.stopped == 1
     window._piano.play_key("D4")
     window._handle_press_events((FingerPressEvent("LEFT_INDEX", 4),))
@@ -241,7 +244,7 @@ def test_free_play_window_blocks_pause_and_skips_a_held_finger_on_resume(qapp):
     assert audio.played[-1] == "C4"
 
     buttons["finishSessionButton"].click()
-    assert window.findChild(QLabel, "sessionStatusLabel").text() == "Sesión finalizada"
+    assert window.findChild(QLabel, "sessionStatusLabel").text() == "Finalizada"
     window._piano.play_key("G4")
     assert "G4" not in audio.played
     assert buttons["startSessionButton"].isEnabled()
@@ -275,3 +278,48 @@ def test_session_controls_keep_the_existing_calibration(qapp):
     assert pressed.events
     assert pressed.events[0].finger_id == "LEFT_INDEX"
     window.close()
+
+
+def test_key_pulse_fades_back_and_a_held_gesture_stays_lit(qapp):
+    piano = PianoWidget()
+    piano.resize(900, 170)
+    piano.pulse_click("C4")
+
+    assert piano.level("C4") == pytest.approx(1.0)
+    assert piano.glow("C4") == pytest.approx(1.0)
+    assert "C4" in piano.lit_notes()
+
+    piano.advance(0.16)
+    assert piano.level("C4") == pytest.approx(1.0)
+    piano.advance(0.12)
+    assert 0.45 < piano.level("C4") < 0.95
+    assert piano.glow("C4") < piano.level("C4")
+    piano.advance(0.7)
+    assert piano.level("C4") == 0.0
+    assert piano.glow("C4") == 0.0
+    assert "C4" not in piano.lit_notes()
+
+    piano.set_gesture_notes({"E4"})
+    assert piano.level("E4") == pytest.approx(1.0)
+    piano.advance(0.4)
+    assert piano.level("E4") == pytest.approx(1.0)
+    piano.set_gesture_notes(set())
+    piano.advance(0.12)
+    assert 0.45 < piano.level("E4") < 0.95
+    piano.advance(0.7)
+    assert "E4" not in piano.lit_notes()
+
+
+def test_history_capsules_fade_in_without_rebuilding_rows(qapp):
+    strip = NoteHistoryStrip()
+    strip.resize(320, 70)
+    row = ("C4", "gesto", "LEFT_THUMB")
+    strip.set_rows((row, ("E4", "clic", "teclado")))
+
+    assert strip.opacity_of(row) == 0.0
+    assert "C4 · gesto · LEFT_THUMB" in strip.caption()
+    assert "E4 · clic · teclado" in strip.caption()
+    strip.advance(0.2)
+    assert strip.opacity_of(row) == pytest.approx(1.0)
+    strip.set_rows(())
+    assert strip.caption() == "Historial: —"

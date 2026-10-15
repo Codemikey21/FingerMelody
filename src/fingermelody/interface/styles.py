@@ -62,8 +62,7 @@ QLabel#rightLegend {
     font-weight: 600;
 }
 QLabel#statusLabel, QLabel#audioStatus, QLabel#lastNoteLabel, QLabel#lastFingerLabel,
-QLabel#pressCountLabel, QLabel#handsLabel, QLabel#leftHandLabel, QLabel#rightHandLabel,
-QLabel#sessionStatusLabel {
+QLabel#pressCountLabel, QLabel#handsLabel, QLabel#leftHandLabel, QLabel#rightHandLabel {
     font-size: 13px;
 }
 QLabel#modeLabel {
@@ -71,15 +70,27 @@ QLabel#modeLabel {
     font-size: 13px;
     font-weight: 700;
 }
+QLabel#sessionStatusLabel {
+    border-radius: 11px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}
 QLabel#sessionStatusLabel[phase="playing"] {
-    color: #3ee0d0;
+    color: #04221c;
+    background-color: #3ee0d0;
 }
 QLabel#sessionStatusLabel[phase="paused"] {
-    color: #ffb4c0;
+    color: #2a1020;
+    background-color: #ffb4c0;
 }
-QLabel#historyLabel {
+QLabel#sessionStatusLabel[phase="finished"] {
+    color: #1a1230;
+    background-color: #c4b6ff;
+}
+QLabel#sessionStatusLabel[phase="idle"] {
     color: #c5cad6;
-    font-size: 12px;
+    background-color: #242836;
 }
 QLabel#statusLabel[error="yes"], QLabel#audioStatus[error="yes"] {
     color: #ff8f9a;
