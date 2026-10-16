@@ -42,7 +42,6 @@ def test_only_free_play_is_available_and_other_modes_are_rejected():
 
     assert [item.code for item in modes] == [FREE_PLAY]
     assert modes[0].title == "Modo libre"
-    assert modes[1].title == "Modo libre"
     with pytest.raises(ValueError):
         SessionController(mode="guided")
 

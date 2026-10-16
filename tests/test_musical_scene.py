@@ -62,6 +62,6 @@ def test_overlap_preserves_mouse_access_and_hit_effects(qapp):
     window._highway.advance_visual(2)
     window._piano.play_key("E4")
     assert audio.played == ["E4"]
-    assert window._highway.effect_count() == 0
+    assert window._highway.effect_count() > 0
     assert window._piano.glow("E4") > 0
     window.close()

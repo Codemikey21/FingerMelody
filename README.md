@@ -33,8 +33,9 @@ FingerMelody abre como piano virtual libre, con la sesión en espera. Pulsa
 o clics. No se carga ninguna canción ni se muestran barras programadas.
 
 Se conservan el escenario neón, la cámara flotante, el piano iluminado y el
-historial. Los impactos líquidos y columnas reactivas del modo libre todavía
-no están conectados; se mantienen internamente para el siguiente bloque.
+historial. Cada nota aceptada activa un impacto líquido, partículas, una columna de luz
+y reflejos en su tecla. Los efectos de las diez notas pueden coexistir; no
+producen audio ni dependen de una canción.
 El controlador guiado permanece aislado, sin acceso desde la interfaz pública.
 
 ## Entorno de desarrollo

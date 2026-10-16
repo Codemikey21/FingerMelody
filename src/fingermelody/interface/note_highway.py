@@ -18,12 +18,11 @@ _LEAD_BEATS = 2.35
 _VISUAL_BEATS_PER_SECOND = 2.05
 _TICK_MS = 16
 _SLOW_TICK_MS = 32
-_MAX_PARTICLES = 36
-_REDUCED_PARTICLES = 12
 
 
 @dataclass
 class _Particle:
+    note: str
     x: float
     y: float
     vx: float
@@ -100,11 +99,21 @@ class NoteHighway(QWidget):
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - firma de Qt
         super().resizeEvent(event)
+        if event.oldSize().height() >= 0:
+            previous_y = max(24.0, event.oldSize().height() - 16.0)
+            for particle in self._particles:
+                particle.y += self.activation_y() - previous_y
         self.resized.emit()
 
     def set_lanes(self, lanes: tuple[tuple[str, float, float], ...]) -> None:
         """Cada carril es nota, centro horizontal y ancho de la tecla, en este widget."""
-        self._lanes = {note: (center, width) for note, center, width in lanes}
+        new_lanes = {note: (center, width) for note, center, width in lanes}
+        for particle in self._particles:
+            old = self._lanes.get(particle.note)
+            new = new_lanes.get(particle.note)
+            if old is not None and new is not None:
+                particle.x += new[0] - old[0]
+        self._lanes = new_lanes
         self._publish_illumination()
         self.update()
 
@@ -171,7 +180,7 @@ class NoteHighway(QWidget):
         if note not in self._lanes:
             return
         # Una sola reacción por carril; los aciertos rápidos no acumulan trabajo.
-        self._impacts = [item for item in self._impacts if item.note != note][-7:]
+        self._impacts = [item for item in self._impacts if item.note != note]
         self._impacts.append(_Impact(note, strength=strength))
         self._publish_impact_light()
 
@@ -284,15 +293,15 @@ class NoteHighway(QWidget):
             return
         center, _width = lane
         amount = 4 if self._reduced else 6 + self._rng.randrange(7)
-        cap = _REDUCED_PARTICLES if self._reduced else _MAX_PARTICLES
+        # Presupuesto por nota: repetir un dedo no elimina efectos de otros.
+        self._particles = [p for p in self._particles if p.note != note]
         y = self.activation_y()
         color = note_color(note)
         for _ in range(amount):
-            if len(self._particles) >= cap:
-                self._particles.pop(0)
             life = 0.22 + self._rng.random() * 0.2
             self._particles.append(
                 _Particle(
+                    note=note,
                     x=center + self._rng.uniform(-10.0, 10.0),
                     y=y + self._rng.uniform(-4.0, 4.0),
                     vx=self._rng.uniform(-22.0, 22.0),

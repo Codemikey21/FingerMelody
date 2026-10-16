@@ -503,6 +503,7 @@ class MainWindow(QMainWindow):
         self._diag_play_ms = (time.perf_counter() - started) * 1000.0
         self._show_performance(accepted)
         self._piano.pulse_click(accepted.note)
+        self._stage.notify_note(accepted.note)
         return accepted
 
     def _show_performance(self, entry: HistoryEntry) -> None:

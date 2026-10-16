@@ -62,7 +62,7 @@ def test_ten_fingers_in_one_batch_are_independent_and_deduplicated(qapp):
     assert audio.played == expected * 2
     assert worker is window._worker and engine is worker._gesture_engine
     assert window._highway._steps == ()
-    assert window._highway.effect_count() == 0  # Bloque 3 pendiente.
+    assert len(window._highway._impacts) == 10
     window._reset_press_count()
     assert window._session.press_count == 0
     assert len(window._session.history) == 20

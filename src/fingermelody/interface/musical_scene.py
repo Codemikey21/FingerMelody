@@ -29,6 +29,13 @@ class MusicalScene(QWidget):
         highway.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._camera_placed = False
 
+    def notify_note(self, note: str) -> None:
+        """Reacciona a una nota aceptada; nunca reproduce ni genera música."""
+        if note not in self.piano.note_names:
+            return
+        self.sync_lanes()
+        self.highway.notify_hit(note)
+
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(BACKGROUND))
