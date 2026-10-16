@@ -5,6 +5,8 @@ No reproduce sonido y no importa el motor de audio.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fingermelody.music.notes import NOTES_BY_NAME, Note
 
 # Orden de la escala. La reproducción no depende de estos identificadores.
@@ -20,6 +22,14 @@ DEFAULT_FINGER_NOTES: tuple[tuple[str, str], ...] = (
     ("RIGHT_RING", "D5"),
     ("RIGHT_PINKY", "E5"),
 )
+
+
+@dataclass(frozen=True)
+class NoteAssignment:
+    note: str
+    finger_id: str
+    hand: str | None
+    finger: str | None
 
 
 class NoteMapper:
@@ -48,3 +58,21 @@ class NoteMapper:
 
     def assignments(self) -> tuple[tuple[str, str], ...]:
         return tuple(self._mapping.items())
+
+    def assignments_for_note(self, note: str) -> tuple[NoteAssignment, ...]:
+        """Consulta inversa sin asumir que una nota tenga un único dedo.
+
+        Los identificadores personalizados siguen siendo válidos, aunque no
+        proporcionen anatomía reconocible (hand/finger serán None).
+        """
+        result = []
+        for finger_id, assigned in self._mapping.items():
+            if assigned != note:
+                continue
+            hand, separator, finger = finger_id.partition("_")
+            anatomical = (separator and hand in ("LEFT", "RIGHT")
+                          and finger in ("THUMB", "INDEX", "MIDDLE", "RING", "PINKY"))
+            result.append(NoteAssignment(assigned, finger_id,
+                                         hand if anatomical else None,
+                                         finger if anatomical else None))
+        return tuple(result)

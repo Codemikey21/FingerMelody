@@ -28,6 +28,13 @@ class MusicalScene(QWidget):
         highway.set_integrated(True)
         highway.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._camera_placed = False
+        self._guided = False
+        self._guided_camera_x = None
+
+    def set_guided(self, enabled: bool) -> None:
+        self._guided = enabled
+        self.setMinimumHeight(450 if enabled else 370)
+        self.arrange()
 
     def notify_note(self, note: str) -> None:
         """Reacciona a una nota aceptada; nunca reproduce ni genera música."""
@@ -51,7 +58,12 @@ class MusicalScene(QWidget):
         piano_height = max(150, min(190, round(self.height() * 0.27)))
         keyboard_top = self.height() - piano_height
         self.piano.setGeometry(0, keyboard_top, self.width(), piano_height)
-        self.highway.setGeometry(0, 0, self.width(), keyboard_top + 16)
+        # Usar un hueco entre carriles de anticipación; reservar altura solo
+        # cuando la tarjeta no cabe. Nunca cambiar las coordenadas de las notas.
+        self._guided_camera_x = self._camera_gap() if self._guided else None
+        top = 180 if self._guided and self._guided_camera_x is None else 0
+        self.highway.setMinimumHeight(80 if self._guided else 220)
+        self.highway.setGeometry(0, top, self.width(), keyboard_top + 16 - top)
         self.highway.raise_()
         self.sync_lanes()
 
@@ -64,13 +76,30 @@ class MusicalScene(QWidget):
         self.highway.set_lanes(tuple(lanes))
         self.place_camera()
 
+    def _camera_gap(self) -> int | None:
+        occupied = set(self.highway.preview_notes())
+        left = 12.0
+        for note, rect in self.piano.white_rects():
+            if note not in occupied:
+                continue
+            if rect.left() - left >= 272:
+                return round(left + 12)
+            left = rect.right()
+        if self.width() - left >= 272:
+            return round(left + 12)
+        return None
+
     def place_camera(self, reveal: bool = False) -> None:
         if self.width() < 520:
             return
         card_w = min(292, max(248, round(self.width() * 0.24)))
-        card_h = min(206, max(168, self.piano.y() - 24))
+        card_h = 168 if self._guided else min(206, max(168, self.piano.y() - 24))
+        if self._guided:
+            card_w = 248
         # Posición estable: en interpretación libre no existe nota objetivo.
         x = self.width() - card_w - 12
+        if self._guided_camera_x is not None and self._guided:
+            x = self._guided_camera_x
         previous = self.camera.pos()
         self.camera.setGeometry(x, 12, card_w, card_h)
         self.camera.raise_()

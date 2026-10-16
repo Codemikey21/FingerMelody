@@ -12,6 +12,9 @@ from PySide6.QtGui import QColor, QLinearGradient, QRadialGradient, QPainter, QP
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from fingermelody.interface.neon_palette import BACKGROUND, alpha, note_color
+from fingermelody.music.guided import GuidedSnapshot
+from fingermelody.music.note_mapper import NoteMapper
+from fingermelody.music.session import PHASE_PLAYING
 
 _PIXELS_PER_BEAT = 54.0
 _LEAD_BEATS = 2.35
@@ -70,6 +73,8 @@ class NoteHighway(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("noteHighway")
+        self._snapshot: GuidedSnapshot | None = None
+        self._labels: dict[str, str] = {}
         self._integrated = False
         self._background_key = None
         self._background = None
@@ -130,6 +135,8 @@ class NoteHighway(QWidget):
 
     def set_chart(self, steps: tuple[tuple[str, float], ...], index: int) -> None:
         """Recibe la canción y el índice ya decidido. No lo incrementa."""
+        self._snapshot = None
+        self._labels.clear()
         restarted = index == 0 and (not self._steps or self._index != 0)
         self._steps = tuple(steps)
         self._index = max(0, min(index, len(self._steps)))
@@ -145,11 +152,82 @@ class NoteHighway(QWidget):
         self._arm_timer()
         self.update()
 
+    def set_snapshot(self, snapshot: GuidedSnapshot, mapper: NoteMapper | None = None) -> None:
+        """Consume el contrato completo; nunca acepta entradas ni avanza la música.
+
+        Reenviar estados parciales o pausa/reanudación conserva el desplazamiento.
+        Una canción nueva o un reinicio explícito comienza con anticipación.
+        """
+        previous = self._snapshot
+        restarted = (previous is None
+                     or tuple(s.step for s in previous.steps) != tuple(s.step for s in snapshot.steps)
+                     or snapshot.index < previous.index
+                     or (snapshot.index == 0 and previous.phase == "idle"
+                         and snapshot.phase == PHASE_PLAYING))
+        self._snapshot = snapshot
+        self._steps = tuple((s.required_notes[0], s.relative_duration) for s in snapshot.steps)
+        self._index = snapshot.index
+        if restarted:
+            self._scroll = -_LEAD_BEATS
+            self._arrival_index = -1
+        mapper = mapper or NoteMapper()
+        hands = {"LEFT": "Izquierda", "RIGHT": "Derecha"}
+        fingers = {"THUMB": "Pulgar", "INDEX": "Índice", "MIDDLE": "Medio",
+                   "RING": "Anular", "PINKY": "Meñique"}
+        self._labels = {}
+        for state in snapshot.steps:
+            for note in state.required_notes:
+                assignments = mapper.assignments_for_note(note)
+                descriptions = [f"{hands.get(a.hand, '?')} · {fingers.get(a.finger, a.finger_id)}"
+                                for a in assignments]
+                self._labels[note] = " / ".join(descriptions) or "Sin asignación"
+        self.set_running(snapshot.phase == PHASE_PLAYING)
+        self._publish_illumination()
+
+    def bar_identities(self) -> tuple[tuple[str, str], ...]:
+        """Identidades de todas las barras no completadas, incluidas las futuras."""
+        if self._snapshot is None:
+            return ()
+        return tuple(n.identity for s in self._snapshot.steps[self._index:]
+                     if not s.completed for n in s.visual_notes)
+
+    def bar_label(self, note: str) -> str:
+        return f"{note} · {self._labels.get(note, 'Sin asignación')}"
+
+    def preview_notes(self) -> tuple[str, ...]:
+        """Carriles de la anticipación visible, para ubicar la tarjeta de cámara."""
+        return tuple(dict.fromkeys(note for _, note, _ in self._bars()))
+
+    def bar_opacity(self, index: int, accepted: bool) -> float:
+        return 0.24 if accepted else (1.0 if index == self._index else 0.36)
+
+    def _bars(self):
+        for index in range(self._index, min(len(self._steps), self._index + 8)):
+            if self._snapshot is None:
+                yield index, self._steps[index][0], False
+            else:
+                state = self._snapshot.steps[index]
+                if not state.completed:
+                    for visual in state.visual_notes:
+                        yield index, visual.note, visual.accepted
+
     def set_running(self, running: bool) -> None:
         """Con la sesión en pausa o sin iniciar, las barras no siguen bajando."""
         self._running = running
         self._paused_motion = not running
         self._arm_timer()
+        self.update()
+
+    def clear_transients(self) -> None:
+        self._impacts.clear()
+        self._particles.clear()
+        self._ghosts.clear()
+        self._flashes.clear()
+        self._trail = 0.0
+        self._arrival_index = -1
+        self.set_chart((), 0)
+        self.set_running(False)
+        self.impact_light_changed.emit({})
         self.update()
 
     def shutdown(self) -> None:
@@ -166,9 +244,11 @@ class NoteHighway(QWidget):
 
     def notify_hit(self, note: str) -> None:
         """Efecto visual del acierto. No cambia el índice ni reproduce sonido."""
-        rect = self.bar_rect(self._index)
-        if rect is not None and self.current_note() == note:
+        rect = self.bar_rect(self._index, note)
+        if rect is not None:
             color = note_color(note)
+            if self._snapshot is not None:
+                color = alpha(color, 40)  # No ocultar la marca de aceptación temprana.
             self._ghosts.append(_Ghost(rect.x(), rect.y(), rect.width(), rect.height(), 0.42, 0.42, QColor(color)))
             self._flashes.append(_Flash(rect.center().x(), rect.width(), 0.28, 0.28))
         self._add_impact(note, 1.0)
@@ -207,10 +287,14 @@ class NoteHighway(QWidget):
             return None
         return self._steps[self._index][0]
 
-    def bar_rect(self, index: int) -> QRectF | None:
+    def bar_rect(self, index: int, note: str | None = None) -> QRectF | None:
         if index < 0 or index >= len(self._steps):
             return None
-        note, beats = self._steps[index]
+        lead, beats = self._steps[index]
+        note = lead if note is None else note
+        required = (lead,) if self._snapshot is None else self._snapshot.steps[index].required_notes
+        if note not in required:
+            return None
         lane = self._lanes.get(note)
         if lane is None:
             return None
@@ -262,9 +346,6 @@ class NoteHighway(QWidget):
             target = self._target_beat()
             if self._scroll < target:
                 self._scroll = min(target, self._scroll + seconds * _VISUAL_BEATS_PER_SECOND)
-        if self.waiting() and self._arrival_index != self._index:
-            self._arrival_index = self._index
-            self._add_impact(self.current_note(), 0.65)
         self._publish_impact_light()
         self._age(self._particles, seconds)
         self._age(self._ghosts, seconds)
@@ -355,13 +436,12 @@ class NoteHighway(QWidget):
 
     def _publish_illumination(self) -> None:
         lighting = {}
-        for index in range(self._index, min(len(self._steps), self._index + 8)):
-            rect = self.bar_rect(index)
+        for index, note, accepted in self._bars():
+            rect = self.bar_rect(index, note)
             if rect is None or rect.bottom() < 0:
                 continue
             proximity = max(0.0, 1.0 - (self.activation_y() - rect.bottom()) / 260.0)
-            strength = proximity * (1.0 if index == self._index else 0.45)
-            note = self._steps[index][0]
+            strength = proximity * (0.18 if accepted else (1.0 if index == self._index else 0.45))
             lighting[note] = max(lighting.get(note, 0.0), strength)
         self.illumination_changed.emit(lighting)
 
@@ -395,17 +475,16 @@ class NoteHighway(QWidget):
     def _paint_key_light(self, painter: QPainter) -> None:
         """Luz continua de proximidad, sin partículas ni eventos musicales."""
         y = self.activation_y()
-        for index in range(self._index, min(len(self._steps), self._index + 8)):
-            rect = self.bar_rect(index)
+        for index, note, accepted in self._bars():
+            rect = self.bar_rect(index, note)
             if rect is None:
                 continue
             proximity = max(0.0, 1.0 - (y - rect.bottom()) / 300.0)
             if proximity <= 0:
                 continue
-            note = self._steps[index][0]
             color = note_color(note)
             center, key_width = self._lanes[note]
-            strength = proximity * (1.0 if index == self._index else 0.3)
+            strength = proximity * (0.18 if accepted else (1.0 if index == self._index else 0.3))
             painter.save()
             painter.setClipRect(QRectF(0, 0, self.width(), y + 12))
             # Elipse radial alta: luz que emerge de la tecla y se disuelve arriba.
@@ -436,13 +515,13 @@ class NoteHighway(QWidget):
         if not self._lanes:
             return
         view = QRectF(self.rect())
-        for index in range(self._index, min(len(self._steps), self._index + 8)):
-            rect = self.bar_rect(index)
+        for index, note, accepted in self._bars():
+            rect = self.bar_rect(index, note)
             if rect is None or not rect.adjusted(-40, -110, 40, 40).intersects(view):
                 continue
-            color = note_color(self._steps[index][0])
+            color = note_color(note)
             painter.save()
-            painter.setOpacity(1.0 if index == self._index else 0.44)
+            painter.setOpacity(self.bar_opacity(index, accepted))
             painter.setPen(Qt.PenStyle.NoPen)
             if self._trail > 0:
                 trail = QRectF(rect.left(), rect.top() - 100, rect.width(), 100)
@@ -453,6 +532,17 @@ class NoteHighway(QWidget):
             sprite = self._bar_sprite(rect, color)
             painter.drawPixmap(QPointF(rect.x() - 32, rect.y() - 32), sprite)
             painter.restore()
+            if self._snapshot is not None:
+                painter.save()
+                painter.setOpacity(0.7 if accepted else (1.0 if index == self._index else 0.6))
+                painter.setPen(QColor("#eafaff"))
+                font = painter.font()
+                font.setPixelSize(13 if index == self._index else 11)
+                font.setBold(index == self._index)
+                painter.setFont(font)
+                label = ("✓ " if accepted else "") + note
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+                painter.restore()
 
     def _bar_sprite(self, source: QRectF, color: QColor) -> QPixmap:
         ratio = self.devicePixelRatioF()

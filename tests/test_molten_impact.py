@@ -4,7 +4,7 @@ from fingermelody.interface.note_highway import NoteHighway
 from fingermelody.interface.piano_widget import PianoWidget
 
 
-def test_arrival_reacts_once_without_audio_or_key_press(qapp):
+def test_arrival_waits_without_impact_audio_or_key_press(qapp):
     road = NoteHighway()
     piano = PianoWidget()
     road.impact_light_changed.connect(piano.set_impact_lights)
@@ -14,8 +14,8 @@ def test_arrival_reacts_once_without_audio_or_key_press(qapp):
     road.set_chart((("E4", 1), ("E4", 1)), 0)
     road.set_running(True)
     road.advance_visual(2)
-    assert len(road._impacts) == 1
-    assert piano._impact_lights["E4"] > 0
+    assert road._impacts == []
+    assert piano._impact_lights == {}
     assert road._index == 0
     assert emitted == []
     assert piano.lit_notes() == set()
@@ -26,7 +26,7 @@ def test_arrival_reacts_once_without_audio_or_key_press(qapp):
     assert road._impacts == []
     road.set_chart(road._steps, 1)
     road.advance_visual(1)
-    assert len(road._impacts) == 1
+    assert road._impacts == []
     road.shutdown()
 
 

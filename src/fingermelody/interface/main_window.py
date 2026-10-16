@@ -8,6 +8,7 @@ from collections import deque
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -76,6 +77,13 @@ class MainWindow(QMainWindow):
         self._rescaling = False
         self._muted = False
         self._session = SessionController()
+        self._mode = "free"
+        self._event_floor_ms = None
+        self._guided_history = deque(maxlen=48)
+        self._guided_count_offset = 0
+        self._guided_started = 0.0
+        self._guided_pause_at = None
+        self._guided_paused_span = 0.0
         self._played_keys: set[tuple[str, int]] = set()
         self._played_order: deque[tuple[str, int]] = deque()
         self._diagnostics = False
@@ -214,7 +222,14 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         header.setSpacing(10)
         header.addWidget(title)
-        header.addWidget(self._camera_chip)
+        self._mode_selector = QComboBox()
+        self._mode_selector.setObjectName("modeSelector")
+        self._mode_selector.addItem("Modo libre", "free")
+        self._mode_selector.addItem("Modo guiado", "guided")
+        self._mode_selector.setFixedWidth(140)
+        self._mode_selector.setStyleSheet("QComboBox {background:#14172b; color:#bfeeff; border:1px solid #5763ac; border-radius:6px; padding:6px;}")
+        self._mode_selector.currentIndexChanged.connect(self._select_mode)
+        header.addWidget(self._mode_selector)
         header.addStretch(1)
         header.addWidget(self._volume_label)
         header.addWidget(self._volume)
@@ -260,6 +275,9 @@ class MainWindow(QMainWindow):
         session_row.addWidget(self._info.pause_session)
         session_row.addWidget(self._info.resume_session)
         session_row.addWidget(self._info.finish_session)
+        self._guide_progress = QLabel("")
+        self._guide_progress.hide()
+        session_row.addWidget(self._guide_progress)
         session_row.addWidget(self._last_note)
         session_row.addStretch(1)
         session_row.addWidget(self._info.history, stretch=1)
@@ -301,6 +319,11 @@ class MainWindow(QMainWindow):
         self._details.hide()
 
         layout.addLayout(header)
+        self._guide_hint = QLabel("")
+        self._guide_hint.setWordWrap(True)
+        self._guide_hint.setStyleSheet("color:#c5d6ee; padding:2px 4px;")
+        self._guide_hint.hide()
+        layout.addWidget(self._guide_hint)
         layout.addWidget(self._stage, stretch=1)
         layout.addLayout(session_row)
         self._sync_camera_chip()
@@ -439,7 +462,10 @@ class MainWindow(QMainWindow):
             return
         clock = self._worker.event_clock()
         dispatch_ms = None if clock is None else (time.perf_counter() - clock) * 1000.0
+        token = self._guide.batch_token if self._mode == "guided" else None
         for event in events:
+            if self._event_floor_ms is not None and event.timestamp_ms <= self._event_floor_ms:
+                continue
             if not self._accept_press(event):
                 continue
             note = self._mapper.note_name(event.finger_id)
@@ -447,10 +473,11 @@ class MainWindow(QMainWindow):
                 continue
             self._diag_dispatch_ms = dispatch_ms
             accepted = self._perform(
-                MusicalEvent(note, ORIGIN_GESTURE, event.finger_id)
+                MusicalEvent(note, ORIGIN_GESTURE, event.finger_id), expected_step=token
             )
             if accepted is None:
-                self._diag_event = f"Evento {event.finger_id} → {note} (sin reproducción)"
+                if self._mode == "free":
+                    self._diag_event = f"Evento {event.finger_id} → {note} (sin reproducción)"
                 continue
             self._diag_event = f"Evento {event.finger_id} → {note}"
 
@@ -494,8 +521,18 @@ class MainWindow(QMainWindow):
             self._audio_status.setProperty("error", "no")
             restyle(self._audio_status)
 
-    def _perform(self, event: MusicalEvent) -> HistoryEntry | None:
-        accepted = self._session.submit(event)
+    def _perform(self, event: MusicalEvent, *, expected_step=None) -> HistoryEntry | None:
+        if self._mode == "guided":
+            token = self._guide.batch_token if expected_step is None else expected_step
+            result = self._guide.submit_result(event.note, event.finger_id, expected_step=token)
+            if not result.accepted:
+                self._diag_event = f"Guiado: {result.reason.value}"
+                return None
+            elapsed = time.monotonic() - self._guided_started - self._guided_paused_span
+            accepted = HistoryEntry(event.note, event.finger_id, event.origin, round(elapsed * 1000))
+            self._guided_history.append(accepted)
+        else:
+            accepted = self._session.submit(event)
         if accepted is None:
             return None
         started = time.perf_counter()
@@ -504,10 +541,12 @@ class MainWindow(QMainWindow):
         self._show_performance(accepted)
         self._piano.pulse_click(accepted.note)
         self._stage.notify_note(accepted.note)
+        if self._mode == "guided":
+            self._update_buttons()
         return accepted
 
     def _show_performance(self, entry: HistoryEntry) -> None:
-        self._press_count.setText(f"Pulsaciones: {self._session.press_count}")
+        self._press_count.setText(f"Pulsaciones: {self._controller().press_count - (self._guided_count_offset if self._mode == 'guided' else 0)}")
         self._last_note.setText(f"Última nota: {entry.note}")
         if entry.finger_id:
             self._last_finger.setText(f"Dedo: {finger_caption(entry.finger_id)}")
@@ -522,7 +561,7 @@ class MainWindow(QMainWindow):
                 "gesto" if entry.origin == ORIGIN_GESTURE else "clic",
                 entry.finger_id or "teclado",
             )
-            for entry in self._session.recent(4)
+            for entry in (tuple(self._guided_history)[-4:] if self._mode == "guided" else self._session.recent(4))
         )
         self._info.history.set_rows(rows)
 
@@ -563,12 +602,19 @@ class MainWindow(QMainWindow):
         self._piano.clear_clicks()
 
     def start_session(self) -> None:
-        if self._session.phase != PHASE_IDLE:
+        if self._controller().phase != PHASE_IDLE:
             return
         self._handle_press_events(self._worker.take_events())
         _image, _fps, _sequence, _hands, gestures, _timing = self._worker.latest()
-        if not self._session.start(self._held_finger_ids(gestures)):
+        self._mark_input_boundary()
+        if not self._controller().start(self._held_finger_ids(gestures)):
             return
+        if self._mode == "guided":
+            self._guided_history.clear()
+            self._guided_count_offset = 0
+            self._guided_started = time.monotonic()
+            self._guided_pause_at = None
+            self._guided_paused_span = 0.0
         self._last_note.setText("Última nota: —")
         self._last_finger.setText("Dedo: —")
         self._press_count.setText("Pulsaciones: 0")
@@ -577,27 +623,33 @@ class MainWindow(QMainWindow):
 
     def pause_session(self) -> None:
         pending = self._worker.take_events()
-        controller = self._session
+        controller = self._controller()
         if not controller.pause():
             self._handle_press_events(pending)
             return
         self._handle_press_events(pending)
+        if self._mode == "guided":
+            self._guided_pause_at = time.monotonic()
         self._stop_sounds()
         self._update_buttons()
 
     def resume_session(self) -> None:
-        controller = self._session
+        controller = self._controller()
         if controller.phase != PHASE_PAUSED:
             return
         self._handle_press_events(self._worker.take_events())
         _image, _fps, _sequence, _hands, gestures, _timing = self._worker.latest()
+        self._mark_input_boundary()
         if not controller.resume(self._held_finger_ids(gestures)):
             return
+        if self._mode == "guided" and self._guided_pause_at is not None:
+            self._guided_paused_span += time.monotonic() - self._guided_pause_at
+            self._guided_pause_at = None
         self._update_buttons()
 
     def finish_session(self) -> None:
         pending = self._worker.take_events()
-        controller = self._session
+        controller = self._controller()
         if not controller.finish():
             self._handle_press_events(pending)
             return
@@ -605,12 +657,66 @@ class MainWindow(QMainWindow):
         self._stop_sounds()
         self._update_buttons()
 
+    def _mark_input_boundary(self) -> None:
+        # También rechaza un fotograma que seguía procesándose al drenar la cola.
+        self._event_floor_ms = int(time.monotonic() * 1000) if self._worker.isRunning() else None
+
+    def _controller(self):
+        return self._guide if self._mode == "guided" else self._session
+
+    def _select_mode(self, index: int) -> None:
+        mode = self._mode_selector.itemData(index)
+        if mode == self._mode:
+            return
+        self._controller().finish()
+        # Drenar sin reproducir; conservar deduplicación de eventos ya observados.
+        for event in self._worker.take_events():
+            self._accept_press(event)
+        self._stop_sounds()
+        self._highway.clear_transients()
+        self._piano.set_gesture_notes(set())
+        self._piano.advance(10)
+        self._mark_input_boundary()
+        self._mode = mode
+        if mode == "guided":
+            from fingermelody.music.guided import GuidedMode
+            self._guide = GuidedMode()
+            self._guided_history.clear()
+            self._guided_count_offset = 0
+        else:
+            self._session = SessionController()
+        self._stage.set_guided(mode == "guided")
+        self._info.mode.setText("Modo guiado" if mode == "guided" else "Modo libre")
+        self._last_note.setText("Última nota: —")
+        self._last_finger.setText("Dedo: —")
+        self._press_count.setText("Pulsaciones: 0")
+        self._refresh_history()
+        self._update_buttons()
+
+    def _refresh_guided_view(self) -> None:
+        guided = self._mode == "guided"
+        self._guide_progress.setVisible(guided)
+        self._guide_hint.setVisible(guided)
+        if guided:
+            self._highway.set_snapshot(self._guide.snapshot(), self._mapper)
+            self._guide_progress.setText(f"Jingle Bells · {self._guide.index}/{self._guide.total}")
+            state = self._guide.step_state()
+            pending = "   |   ".join(self._highway.bar_label(n) for n in state.pending_notes) if state else "—"
+            self._guide_hint.setText(f"Pendientes: {pending}")
+            self._stage.arrange()
+        else:
+            self._highway.set_chart((), 0)
+            self._highway.set_running(False)
+
     def _sync_highway_lanes(self) -> None:
         if hasattr(self, "_stage"):
             self._stage.sync_lanes()
 
     def _reset_press_count(self) -> None:
-        self._session.reset_counters()
+        if self._mode == "guided":
+            self._guided_count_offset = self._guide.press_count
+        else:
+            self._session.reset_counters()
         self._press_count.setText("Pulsaciones: 0")
         self._piano.set_gesture_notes(set())
         self._worker.request_count_reset()
@@ -625,7 +731,7 @@ class MainWindow(QMainWindow):
         }
 
     def _release_open_fingers(self, update: GestureUpdate) -> None:
-        controller = self._session
+        controller = self._controller()
         if controller.phase != PHASE_PLAYING or not update.active:
             return
         held = self._held_finger_ids(update)
@@ -634,7 +740,7 @@ class MainWindow(QMainWindow):
                 controller.release_finger(finger_id)
 
     def _session_caption(self) -> tuple[str, str]:
-        controller = self._session
+        controller = self._controller()
         phase = controller.phase
         if phase == PHASE_PLAYING:
             return "Activa", PHASE_PLAYING
@@ -645,7 +751,7 @@ class MainWindow(QMainWindow):
         return "En espera", PHASE_IDLE
 
     def _refresh_session_controls(self) -> None:
-        phase = self._session.phase
+        phase = self._controller().phase
         self._info.start_session.setEnabled(phase == PHASE_IDLE)
         self._info.pause_session.setEnabled(phase == PHASE_PLAYING)
         self._info.resume_session.setEnabled(phase == PHASE_PAUSED)
@@ -776,3 +882,4 @@ class MainWindow(QMainWindow):
         self._stop_button.setEnabled(running or self._state in {"starting", "live", "stopping"})
         self._sync_camera_chip()
         self._refresh_session_controls()
+        self._refresh_guided_view()

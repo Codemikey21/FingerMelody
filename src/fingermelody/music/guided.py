@@ -12,6 +12,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from fingermelody.music.notes import NOTES_BY_NAME
 from fingermelody.music.session import PHASE_IDLE, PHASE_PAUSED, PHASE_PLAYING
@@ -50,10 +51,53 @@ class SongStep:
 
 
 @dataclass(frozen=True)
+class VisualNoteState:
+    step_id: str
+    note: str
+    accepted: bool
+
+    @property
+    def identity(self) -> tuple[str, str]:
+        return self.step_id, self.note
+
+
+@dataclass(frozen=True)
 class StepState:
     """Instantánea inmutable de un paso y su aceptación individual."""
     step: SongStep
     accepted_notes: frozenset[str]
+    index: int = 0
+    total: int = 1
+    phase: str = PHASE_IDLE
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "accepted_notes", frozenset(self.accepted_notes))
+
+    @property
+    def step_id(self) -> str:
+        return self.step.id
+
+    @property
+    def required_notes(self) -> tuple[str, ...]:
+        return self.step.notes
+
+    @property
+    def relative_duration(self) -> float:
+        return self.step.beats
+
+    @property
+    def position(self) -> int:
+        """Posición humana desde 1; index se cuenta desde 0."""
+        return self.index + 1
+
+    @property
+    def paused(self) -> bool:
+        return self.phase == PHASE_PAUSED
+
+    @property
+    def visual_notes(self) -> tuple[VisualNoteState, ...]:
+        return tuple(VisualNoteState(self.step.id, note, note in self.accepted_notes)
+                     for note in self.step.notes)
 
     @property
     def pending_notes(self) -> tuple[str, ...]:
@@ -82,6 +126,56 @@ class GuideHit:
     step_id: str
     accepted_notes: frozenset[str]
     step_complete: bool
+
+
+@dataclass(frozen=True)
+class GuidedSnapshot:
+    steps: tuple[StepState, ...]
+    index: int
+    phase: str
+    finished: bool
+    completed: bool
+    batch_token: tuple[int, int]
+
+    @property
+    def total(self) -> int:
+        return len(self.steps)
+
+    @property
+    def current(self) -> StepState | None:
+        return self.steps[self.index] if self.index < self.total else None
+
+    @property
+    def paused(self) -> bool:
+        return self.phase == PHASE_PAUSED
+
+    @property
+    def progress(self) -> float:
+        """Fracción de pasos completos; el parcial vive en StepState.progress."""
+        return self.index / self.total
+
+
+class SubmissionReason(str, Enum):
+    ACCEPTED = "accepted"
+    ALREADY_ACCEPTED = "already_accepted"
+    NOTE_NOT_REQUIRED = "note_not_required"
+    SESSION_PAUSED = "session_paused"
+    FINGER_PENDING_RELEASE = "finger_pending_release"
+    STALE_BATCH = "stale_batch"
+    STEP_COMPLETED = "step_completed"
+    SESSION_INACTIVE = "session_inactive"
+    SONG_COMPLETED = "song_completed"
+
+
+@dataclass(frozen=True)
+class SubmissionResult:
+    reason: SubmissionReason
+    hit: GuideHit | None
+    state: StepState | None
+
+    @property
+    def accepted(self) -> bool:
+        return self.hit is not None
 
 
 def jingle_bells() -> tuple[SongStep, ...]:
@@ -200,10 +294,18 @@ class GuidedMode:
         position = self._index if index is None else index
         if position < 0 or position >= len(self._song):
             return None
-        return StepState(self._song[position], frozenset(self._accepted[position]))
+        return StepState(self._song[position], frozenset(self._accepted[position]),
+                         position, self.total, self.phase)
+
+    def snapshot(self) -> GuidedSnapshot:
+        """Consulta sin reloj, audio ni cambios de estado; incluye todos los acordes."""
+        states = tuple(StepState(step, frozenset(self._accepted[i]), i, self.total,
+                                 self.phase) for i, step in enumerate(self._song))
+        return GuidedSnapshot(states, self.index, self.phase, self.finished,
+                              self.completed, self.batch_token)
 
     def chart(self) -> tuple[tuple[str, float], ...]:
-        """Proyección histórica de melodía; la vista multibarra corresponde a D."""
+        """Proyección histórica monofónica; usar snapshot para acordes completos."""
         return tuple((step.note, step.beats) for step in self._song)
 
     def current_note(self) -> str | None:
@@ -267,22 +369,36 @@ class GuidedMode:
         self, note: str, finger_id: str | None = None,
         *, expected_step: tuple[int, int] | None = None,
     ) -> GuideHit | None:
+        """API histórica: cada llamada procesa un único evento."""
+        return self.submit_result(note, finger_id, expected_step=expected_step).hit
+
+    def submit_result(
+        self, note: str, finger_id: str | None = None,
+        *, expected_step: tuple[int, int] | None = None,
+    ) -> SubmissionResult:
+        """Procesa una vez y diagnostica; nunca reproduce ni diagnostica audio."""
+        def reject(reason: SubmissionReason) -> SubmissionResult:
+            return SubmissionResult(reason, None, self.step_state())
+
+        if self._phase == PHASE_PAUSED:
+            return reject(SubmissionReason.SESSION_PAUSED)
         if self._phase != PHASE_PLAYING or self._index >= len(self._song):
-            return None
+            return reject(SubmissionReason.SONG_COMPLETED if self.completed
+                          else SubmissionReason.SESSION_INACTIVE)
         if expected_step is not None and expected_step != self.batch_token:
-            return None
+            return reject(SubmissionReason.STALE_BATCH)
         if finger_id and finger_id in self._suppressed:
-            return None
+            return reject(SubmissionReason.FINGER_PENDING_RELEASE)
         step = self._song[self._index]
         if note not in step.notes:
-            return None
+            return reject(SubmissionReason.NOTE_NOT_REQUIRED)
         now = self._clock()
         if (self.coordination_mode == COORDINATION and self._attempt_started is not None
                 and now - self._attempt_started > self.window_ms / 1000.0):
             self._cancel_partial()
         accepted = self._accepted[self._index]
         if note in accepted:
-            return None
+            return reject(SubmissionReason.ALREADY_ACCEPTED)
         if not accepted:
             self._attempt_started = now
         accepted.add(note)
@@ -297,5 +413,7 @@ class GuidedMode:
                 self._phase = PHASE_IDLE
                 self._finished = True
                 self._suppressed.clear()
-        return GuideHit(note, done, self._index, len(self._song), step.id,
-                        frozenset(accepted), step_complete)
+        hit = GuideHit(note, done, self._index, len(self._song), step.id,
+                       frozenset(accepted), step_complete)
+        return SubmissionResult(SubmissionReason.STEP_COMPLETED if step_complete
+                                else SubmissionReason.ACCEPTED, hit, self.step_state(done))
